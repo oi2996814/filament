@@ -20,6 +20,8 @@
 
 #include <array>
 
+#include <stdint.h>
+
 using namespace utils;
 
 template <typename T>
@@ -58,6 +60,20 @@ TEST(AlgorithmTest, clz) {
         EXPECT_EQ(j, details::clz(i|1));
         EXPECT_EQ(j, count_leading_zeros(i));
     }
+    for (uint16_t i = 1, j = 15; j < 16; i *= 2, j--) {
+        EXPECT_EQ(j, clz(i));
+        EXPECT_EQ(j, clz(uint16_t(i|1)));
+        EXPECT_EQ(j, details::clz(i));
+        EXPECT_EQ(j, details::clz(uint16_t(i|1)));
+        EXPECT_EQ(j, count_leading_zeros(i));
+    }
+    for (uint8_t i = 1, j = 7; j < 8; i *= 2, j--) {
+        EXPECT_EQ(j, clz(i));
+        EXPECT_EQ(j, clz(uint8_t(i|1)));
+        EXPECT_EQ(j, details::clz(i));
+        EXPECT_EQ(j, details::clz(uint8_t(i|1)));
+        EXPECT_EQ(j, count_leading_zeros(i));
+    }
 }
 
 TEST(AlgorithmTest, details_ctz) {
@@ -76,6 +92,16 @@ TEST(AlgorithmTest, ctz) {
         EXPECT_EQ(j, count_trailing_zeros(i));
     }
     for (uint32_t i = 1, j = 0; j < 32; i *= 2, j++) {
+        EXPECT_EQ(j, ctz(i));
+        EXPECT_EQ(j, details::ctz(i));
+        EXPECT_EQ(j, count_trailing_zeros(i));
+    }
+    for (uint16_t i = 1, j = 0; j < 16; i *= 2, j++) {
+        EXPECT_EQ(j, ctz(i));
+        EXPECT_EQ(j, details::ctz(i));
+        EXPECT_EQ(j, count_trailing_zeros(i));
+    }
+    for (uint8_t i = 1, j = 0; j < 8; i *= 2, j++) {
         EXPECT_EQ(j, ctz(i));
         EXPECT_EQ(j, details::ctz(i));
         EXPECT_EQ(j, count_trailing_zeros(i));
@@ -136,91 +162,6 @@ TEST(AlgorithmTest, popcount) {
     for (uint8_t i = 1, j = 7; j < 8; i *= 2, j--) {
         EXPECT_EQ(1, popcount(i));
     }
-}
-
-TEST(AlgorithmTest, UpperBounds) {
-    int* r;
-    int array[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-
-    for (int i = 0; i < 8; i++) {
-        r = utils::upper_bound(std::begin(array), std::end(array), array[i]);
-        EXPECT_EQ(i + 1, r - std::begin(array));
-    }
-
-    r = utils::upper_bound(std::begin(array), std::end(array), 100);
-    EXPECT_EQ(std::end(array), r);
-
-    r = utils::upper_bound(std::begin(array), std::end(array), -1);
-    EXPECT_EQ(std::begin(array), r);
-
-
-    int array2[8] = { 0, 0, 0, 1, 1, 1, 2, 2 };
-    r = utils::upper_bound(std::begin(array2), std::end(array2), 0);
-    EXPECT_EQ(std::begin(array2) + 3, r);
-
-    r = utils::upper_bound(std::begin(array2), std::end(array2), 1);
-    EXPECT_EQ(std::begin(array2) + 6, r);
-
-    r = utils::upper_bound(std::begin(array2), std::end(array2), 2);
-    EXPECT_EQ(std::end(array2), r);
-
-
-    int arrayNPotEven[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    for (int i = 0; i < 10; i++) {
-        r = utils::upper_bound(std::begin(arrayNPotEven), std::end(arrayNPotEven), arrayNPotEven[i]);
-        EXPECT_EQ(i + 1, r - std::begin(arrayNPotEven));
-    }
-
-    int arrayNPotOdd[15] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
-    for (int i = 0; i < 15; i++) {
-        r = utils::upper_bound(std::begin(arrayNPotOdd), std::end(arrayNPotOdd), arrayNPotOdd[i]);
-        EXPECT_EQ(i + 1, r - std::begin(arrayNPotOdd));
-    }
-
-    std::array<int, 4> arr = {{1, 10, 15, 50}};
-    EXPECT_EQ(50, *utils::upper_bound(arr.begin(), arr.end(), 15));
-}
-
-TEST(AlgorithmTest, LowerBounds) {
-    int* r;
-    int array[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-
-    for (int i = 0; i < 8; i++) {
-        r = utils::lower_bound(std::begin(array), std::end(array), array[i]);
-        EXPECT_EQ(i, r - std::begin(array));
-    }
-
-    r = utils::lower_bound(std::begin(array), std::end(array), 100);
-    EXPECT_EQ(std::end(array), r);
-
-    r = utils::lower_bound(std::begin(array), std::end(array), -1);
-    EXPECT_EQ(std::begin(array), r);
-
-
-    int array2[8] = { 0, 0, 0, 1, 1, 1, 2, 2 };
-    r = utils::lower_bound(std::begin(array2), std::end(array2), 0);
-    EXPECT_EQ(std::begin(array2), r);
-
-    r = utils::lower_bound(std::begin(array2), std::end(array2), 1);
-    EXPECT_EQ(std::begin(array2) + 3, r);
-
-    r = utils::lower_bound(std::begin(array2), std::end(array2), 2);
-    EXPECT_EQ(std::begin(array2) + 6, r);
-
-    int arrayNPotEven[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    for (int i = 0; i < 10; i++) {
-        r = utils::lower_bound(std::begin(arrayNPotEven), std::end(arrayNPotEven), arrayNPotEven[i]);
-        EXPECT_EQ(i, r - std::begin(arrayNPotEven));
-    }
-
-    int arrayNPotOdd[15] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
-    for (int i = 0; i < 15; i++) {
-        r = utils::lower_bound(std::begin(arrayNPotOdd), std::end(arrayNPotOdd), arrayNPotOdd[i]);
-        EXPECT_EQ(i, r - std::begin(arrayNPotOdd));
-    }
-
-    std::array<int, 4> arr = {{1, 10, 15, 50}};
-    EXPECT_EQ(15, *utils::lower_bound(arr.begin(), arr.end(), 15));
 }
 
 TEST(AlgorithmTest, Partition) {

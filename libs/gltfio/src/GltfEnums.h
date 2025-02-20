@@ -131,8 +131,10 @@ inline bool getPrimitiveType(cgltf_primitive_type in,
         case cgltf_primitive_type_triangle_strip:
             *out = filament::RenderableManager::PrimitiveType::TRIANGLE_STRIP;
             return true;
+        case cgltf_primitive_type_invalid:
         case cgltf_primitive_type_line_loop:
         case cgltf_primitive_type_triangle_fan:
+        case cgltf_primitive_type_max_enum:
             return false;
     }
     return false;
@@ -216,7 +218,7 @@ inline bool getElementType(cgltf_type type, cgltf_component_type ctype,
                     *actualType = filament::VertexBuffer::AttributeType::UBYTE3;
                     return true;
                 case cgltf_component_type_r_16:
-                    *permitType = filament::VertexBuffer::AttributeType::FLOAT3;
+                    *permitType = filament::VertexBuffer::AttributeType::SHORT3;
                     *actualType = filament::VertexBuffer::AttributeType::SHORT3;
                     return true;
                 case cgltf_component_type_r_16u:
@@ -261,13 +263,6 @@ inline bool getElementType(cgltf_type type, cgltf_component_type ctype,
             return false;
     }
     return false;
-}
-
-inline bool requiresConversion(cgltf_type type, cgltf_component_type ctype) {
-    filament::VertexBuffer::AttributeType permitted;
-    filament::VertexBuffer::AttributeType actual;
-    bool supported = getElementType(type, ctype, &permitted, &actual);
-    return supported && permitted != actual;
 }
 
 #endif // GLTFIO_GLTFENUMS_H

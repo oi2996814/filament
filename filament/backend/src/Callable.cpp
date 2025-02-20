@@ -19,8 +19,7 @@
 #include <utils/Panic.h>
 #include <utils/debug.h>
 
-namespace filament {
-namespace backend {
+namespace filament::backend {
 
 PresentCallable::PresentCallable(PresentFn fn, void* user) noexcept
     : mPresentFn(fn), mUser(user) {
@@ -28,12 +27,11 @@ PresentCallable::PresentCallable(PresentFn fn, void* user) noexcept
 }
 
 void PresentCallable::operator()(bool presentFrame) noexcept {
-    ASSERT_PRECONDITION(mPresentFn, "This PresentCallable was already called. " \
-            "PresentCallables should be called exactly once.");
+    FILAMENT_CHECK_PRECONDITION(mPresentFn) << "This PresentCallable was already called. "
+                                               "PresentCallables should be called exactly once.";
     mPresentFn(presentFrame, mUser);
     // Set mPresentFn to nullptr to denote that the callable has been called.
     mPresentFn = nullptr;
 }
 
-} // namespace backend
-} // namespace filament
+} // namespace filament::backend

@@ -75,7 +75,7 @@ public:
          * which is only safe to destroy after calling DependencyGraph::clear().
          * @param graph DependencyGraph pointer to add the Node to.
          */
-        Node(DependencyGraph& graph) noexcept;
+        explicit Node(DependencyGraph& graph) noexcept;
 
         // Nodes can't be copied
         Node(Node const&) noexcept = delete;
@@ -186,7 +186,7 @@ private:
 };
 
 inline DependencyGraph::Edge::Edge(DependencyGraph& graph,
-        DependencyGraph::Node* from, DependencyGraph::Node* to)
+        Node* from, Node* to)
         : from(from->getId()), to(to->getId()) {
     assert_invariant(graph.mNodes[this->from] == from);
     assert_invariant(graph.mNodes[this->to] == to);

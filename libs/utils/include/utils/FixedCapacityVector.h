@@ -17,15 +17,18 @@
 #ifndef TNT_UTILS_FIXEDCAPACITYVECTOR_H
 #define TNT_UTILS_FIXEDCAPACITYVECTOR_H
 
+#include <utils/compiler.h>
 #include <utils/compressed_pair.h>
 #include <utils/Panic.h>
 
+#include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <type_traits>
 #include <utility>
-#include <vector> // TODO: is this necessary?
 
+#include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -81,7 +84,7 @@ public:
     FixedCapacityVector() = default;
 
     explicit FixedCapacityVector(const allocator_type& allocator) noexcept
-            : mCapacityAllocator({}, allocator) {
+            : mCapacityAllocator(0, allocator) {
     }
 
     explicit FixedCapacityVector(size_type size, const allocator_type& allocator = allocator_type())
@@ -89,6 +92,14 @@ public:
               mCapacityAllocator(size, allocator) {
         mData = this->allocator().allocate(this->capacity());
         construct(begin(), end());
+    }
+
+    FixedCapacityVector(std::initializer_list<T> list,
+            const allocator_type& alloc = allocator_type())
+            : mSize(list.size()),
+              mCapacityAllocator(list.size(), alloc) {
+        mData = this->allocator().allocate(this->capacity());
+        std::uninitialized_copy(list.begin(), list.end(), begin());
     }
 
     FixedCapacityVector(size_type size, const_reference value,
@@ -288,6 +299,16 @@ public:
         }
     }
 
+    UTILS_NOINLINE
+    void shrink_to_fit() {
+        if (size() < capacity()) {
+            FixedCapacityVector t(construct_with_capacity, size(), allocator());
+            t.mSize = size();
+            std::uninitialized_move(begin(), end(), t.begin());
+            this->swap(t);
+        }
+    }
+
 private:
     enum construct_with_capacity_tag{ construct_with_capacity };
 
@@ -307,9 +328,9 @@ private:
 
     iterator assertCapacityForSize(size_type s) {
         if constexpr(CapacityCheck || FILAMENT_FORCE_CAPACITY_CHECK) {
-            ASSERT_PRECONDITION(capacity() >= s,
-                    "capacity exceeded: requested size %lu, available capacity %lu.",
-                    (unsigned long)s, (unsigned long)capacity());
+            FILAMENT_CHECK_PRECONDITION(capacity() >= s)
+                    << "capacity exceeded: requested size " << (unsigned long)s
+                    << "u, available capacity " << (unsigned long)capacity() << "u.";
         }
         return end();
     }
@@ -322,7 +343,7 @@ private:
     }
 
     void construct(iterator first, iterator last, const_reference proto) noexcept {
-        #pragma nounroll
+        UTILS_NOUNROLL
         while (first != last) {
             storage_traits::construct(allocator(), first++, proto);
         }
@@ -330,7 +351,7 @@ private:
 
     // should this be NOINLINE?
     void construct_non_trivial(iterator first, iterator last) noexcept {
-        #pragma nounroll
+        UTILS_NOUNROLL
         while (first != last) {
             storage_traits::construct(allocator(), first++);
         }
@@ -346,7 +367,7 @@ private:
 
     // should this be NOINLINE?
     void destroy_non_trivial(iterator first, iterator last) noexcept {
-        #pragma nounroll
+        UTILS_NOUNROLL
         while (first != last) {
             storage_traits::destroy(allocator(), --last);
         }

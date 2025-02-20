@@ -86,9 +86,11 @@ static void printStringChunk(ostream& json, const ChunkContainer& container,
 static bool printMaterial(ostream& json, const ChunkContainer& container) {
     printStringChunk(json, container, MaterialName, "name");
     printUint32Chunk(json, container, MaterialVersion, "version");
+    printUint32Chunk(json, container, MaterialFeatureLevel, "feature_level");
     json << "\"shading\": {\n";
     printChunk<Shading, uint8_t>(json, container, MaterialShading, "model");
     printChunk<MaterialDomain, uint8_t>(json, container, ChunkType::MaterialDomain, "material_domain");
+    printChunk<UserVariantFilterMask, uint8_t>(json, container, ChunkType::MaterialVariantFilterMask, "variant_filter_mask");
     printChunk<VertexDomain, uint8_t>(json, container, MaterialVertexDomain, "vertex_domain");
     printChunk<Interpolation, uint8_t>(json, container, MaterialInterpolation, "interpolation");
     printChunk<bool, bool>(json, container, MaterialShadowMultiplier, "shadow_multiply");
@@ -103,6 +105,7 @@ static bool printMaterial(ostream& json, const ChunkContainer& container) {
     printChunk<bool, bool>(json, container, MaterialColorWrite, "color_write");
     printChunk<bool, bool>(json, container, MaterialDepthWrite, "depth_write");
     printChunk<bool, bool>(json, container, MaterialDepthTest, "depth_test");
+    printChunk<bool, bool>(json, container, MaterialInstanced, "instanced");
     printChunk<bool, bool>(json, container, MaterialDoubleSided, "double_sided");
     printChunk<CullingMode, uint8_t>(json, container, MaterialCullingMode, "culling");
     printChunk<TransparencyMode, uint8_t>(json, container, MaterialTransparencyMode, "transparency");
@@ -110,7 +113,7 @@ static bool printMaterial(ostream& json, const ChunkContainer& container) {
     return true;
 }
 
-static bool printParametersInfo(ostream& json, const ChunkContainer& container) {
+static bool printParametersInfo(ostream&, const ChunkContainer&) {
     // TODO
     return true;
 }
@@ -121,7 +124,7 @@ static void printShaderInfo(ostream& json, const vector<ShaderInfo>& info, const
     for (uint64_t i = 0; i < info.size(); ++i) {
         const auto& item = info[i];
         string variantString = formatVariantString(item.variant, domain);
-        string ps = (item.pipelineStage == backend::ShaderType::VERTEX) ? "vertex  " : "fragment";
+        string ps = (item.pipelineStage == backend::ShaderStage::VERTEX) ? "vertex  " : "fragment";
         json
                 << "    {"
                 << "\"index\": \"" << std::setw(2) << i << "\", "
@@ -133,13 +136,22 @@ static void printShaderInfo(ostream& json, const vector<ShaderInfo>& info, const
     }
 }
 
-static bool printGlslInfo(ostream& json, const ChunkContainer& container) {
+static bool printGlslInfo(ostream& json, const ChunkContainer& container, ChunkType chunkType) {
     std::vector<ShaderInfo> info;
-    info.resize(getShaderCount(container, ChunkType::MaterialGlsl));
-    if (!getGlShaderInfo(container, info.data())) {
+    info.resize(getShaderCount(container, chunkType));
+    if (!getShaderInfo(container, info.data(), chunkType)) {
         return false;
     }
-    json << "\"opengl\": [\n";
+    switch (chunkType) {
+        case ChunkType::MaterialEssl1:
+            json << "\"essl1\": [\n";
+            break;
+        case ChunkType::MaterialGlsl:
+            json << "\"opengl\": [\n";
+            break;
+        default:
+            assert(false); // unreachable
+    }
     printShaderInfo(json, info, container);
     json << "],\n";
     return true;
@@ -148,7 +160,7 @@ static bool printGlslInfo(ostream& json, const ChunkContainer& container) {
 static bool printVkInfo(ostream& json, const ChunkContainer& container) {
     std::vector<ShaderInfo> info;
     info.resize(getShaderCount(container, ChunkType::MaterialSpirv));
-    if (!getVkShaderInfo(container, info.data())) {
+    if (!getShaderInfo(container, info.data(), ChunkType::MaterialSpirv)) {
         return false;
     }
     json << "\"vulkan\": [\n";
@@ -160,7 +172,7 @@ static bool printVkInfo(ostream& json, const ChunkContainer& container) {
 static bool printMetalInfo(ostream& json, const ChunkContainer& container) {
     std::vector<ShaderInfo> info;
     info.resize(getShaderCount(container, ChunkType::MaterialMetal));
-    if (!getMetalShaderInfo(container, info.data())) {
+    if (!getShaderInfo(container, info.data(), ChunkType::MaterialMetal)) {
         return false;
     }
     json << "\"metal\": [\n";
@@ -177,7 +189,10 @@ bool JsonWriter::writeMaterialInfo(const filaflat::ChunkContainer& container) {
     if (!printParametersInfo(json, container)) {
         return false;
     }
-    if (!printGlslInfo(json, container)) {
+    if (!printGlslInfo(json, container, ChunkType::MaterialGlsl)) {
+        return false;
+    }
+    if (!printGlslInfo(json, container, ChunkType::MaterialEssl1)) {
         return false;
     }
     if (!printVkInfo(json, container)) {
@@ -217,29 +232,34 @@ size_t JsonWriter::getJsonSize() const {
 }
 
 bool JsonWriter::writeActiveInfo(const filaflat::ChunkContainer& package,
-        Backend backend, VariantList activeVariants) {
+        ShaderLanguage shaderLanguage, VariantList activeVariants) {
     vector<ShaderInfo> shaders;
     ostringstream json;
     json << "[\"";
-    switch (backend) {
-        case Backend::OPENGL:
-            shaders.resize(getShaderCount(package, ChunkType::MaterialGlsl));
-            getGlShaderInfo(package, shaders.data());
+    ChunkType chunkType;
+    switch (shaderLanguage) {
+        case ShaderLanguage::ESSL1:
+            json << "essl1";
+            chunkType = ChunkType::MaterialEssl1;
+            break;
+        case ShaderLanguage::ESSL3:
             json << "opengl";
+            chunkType = ChunkType::MaterialGlsl;
             break;
-        case Backend::VULKAN:
-            shaders.resize(getShaderCount(package, ChunkType::MaterialSpirv));
-            getVkShaderInfo(package, shaders.data());
+        case ShaderLanguage::SPIRV:
             json << "vulkan";
+            chunkType = ChunkType::MaterialSpirv;
             break;
-        case Backend::METAL:
-            shaders.resize(getShaderCount(package, ChunkType::MaterialMetal));
-            getMetalShaderInfo(package, shaders.data());
+        case ShaderLanguage::MSL:
             json << "metal";
+            chunkType = ChunkType::MaterialMetal;
             break;
         default:
             return false;
     }
+    shaders.resize(getShaderCount(package, chunkType));
+    getShaderInfo(package, shaders.data(), chunkType);
+
     json << "\"";
     for (size_t variant = 0; variant < activeVariants.size(); variant++) {
         if (activeVariants[variant]) {

@@ -15,12 +15,15 @@
  */
 
 #include <backend/BufferDescriptor.h>
+#include <backend/DescriptorSetOffsetArray.h>
 #include <backend/DriverEnums.h>
 #include <backend/PipelineState.h>
 #include <backend/PixelBufferDescriptor.h>
 #include <backend/TargetBufferInfo.h>
 
 #include <utils/ostream.h>
+
+#include <variant>
 
 using namespace filament;
 using namespace backend;
@@ -41,9 +44,8 @@ using namespace utils;
 
 io::ostream& operator<<(io::ostream& out, ShaderModel model) {
     switch (model) {
-        CASE(ShaderModel, UNKNOWN)
-        CASE(ShaderModel, GL_ES_30)
-        CASE(ShaderModel, GL_CORE_41)
+        CASE(ShaderModel, MOBILE)
+        CASE(ShaderModel, DESKTOP)
     }
     return out;
 }
@@ -55,7 +57,6 @@ io::ostream& operator<<(io::ostream& out, PrimitiveType type) {
         CASE(PrimitiveType, LINES)
         CASE(PrimitiveType, LINE_STRIP)
         CASE(PrimitiveType, POINTS)
-        CASE(PrimitiveType, NONE)
     }
     return out;
 }
@@ -96,7 +97,6 @@ io::ostream& operator<<(io::ostream& out, BufferUsage usage) {
     switch (usage) {
         CASE(BufferUsage, STATIC)
         CASE(BufferUsage, DYNAMIC)
-        CASE(BufferUsage, STREAM)
     }
     return out;
 }
@@ -118,6 +118,7 @@ io::ostream& operator<<(io::ostream& out, SamplerType type) {
         CASE(SamplerType, SAMPLER_2D_ARRAY)
         CASE(SamplerType, SAMPLER_3D)
         CASE(SamplerType, SAMPLER_CUBEMAP)
+        CASE(SamplerType, SAMPLER_CUBEMAP_ARRAY)
         CASE(SamplerType, SAMPLER_EXTERNAL)
     }
     return out;
@@ -254,7 +255,14 @@ io::ostream& operator<<(io::ostream& out, TextureFormat format) {
         CASE(TextureFormat, DXT3_SRGBA)
         CASE(TextureFormat, DXT5_RGBA)
         CASE(TextureFormat, DXT5_SRGBA)
-        CASE(TextureFormat, UNUSED)
+        CASE(TextureFormat, RED_RGTC1)
+        CASE(TextureFormat, SIGNED_RED_RGTC1)
+        CASE(TextureFormat, RED_GREEN_RGTC2)
+        CASE(TextureFormat, SIGNED_RED_GREEN_RGTC2)
+        CASE(TextureFormat, RGB_BPTC_SIGNED_FLOAT)
+        CASE(TextureFormat, RGB_BPTC_UNSIGNED_FLOAT)
+        CASE(TextureFormat, RGBA_BPTC_UNORM)
+        CASE(TextureFormat, SRGB_ALPHA_BPTC_UNORM)
         CASE(TextureFormat, RGBA_ASTC_4x4)
         CASE(TextureFormat, RGBA_ASTC_5x4)
         CASE(TextureFormat, RGBA_ASTC_5x5)
@@ -283,20 +291,7 @@ io::ostream& operator<<(io::ostream& out, TextureFormat format) {
         CASE(TextureFormat, SRGB8_ALPHA8_ASTC_10x10)
         CASE(TextureFormat, SRGB8_ALPHA8_ASTC_12x10)
         CASE(TextureFormat, SRGB8_ALPHA8_ASTC_12x12)
-    }
-    return out;
-}
-
-io::ostream& operator<<(io::ostream& out, TextureUsage usage) {
-    switch (usage) {
-        CASE(TextureUsage, NONE)
-        CASE(TextureUsage, DEFAULT)
-        CASE(TextureUsage, COLOR_ATTACHMENT)
-        CASE(TextureUsage, DEPTH_ATTACHMENT)
-        CASE(TextureUsage, STENCIL_ATTACHMENT)
-        CASE(TextureUsage, UPLOADABLE)
-        CASE(TextureUsage, SAMPLEABLE)
-        CASE(TextureUsage, SUBPASS_INPUT)
+        CASE(TextureFormat, UNUSED)
     }
     return out;
 }
@@ -368,6 +363,7 @@ io::ostream& operator<<(io::ostream& out, BufferObjectBinding binding) {
     switch (binding) {
         CASE(BufferObjectBinding, VERTEX)
         CASE(BufferObjectBinding, UNIFORM)
+        CASE(BufferObjectBinding, SHADER_STORAGE)
     }
     return out;
 }
@@ -400,16 +396,6 @@ io::ostream& operator<<(io::ostream& out, SamplerParams params) {
 
 io::ostream& operator<<(io::ostream& out, const AttributeArray& type) {
     return out << "AttributeArray[" << type.max_size() << "]{}";
-}
-
-io::ostream& operator<<(io::ostream& out, const FaceOffsets& type) {
-    return out << "FaceOffsets{"
-    << type[0] << ", "
-    << type[1] << ", "
-    << type[2] << ", "
-    << type[3] << ", "
-    << type[4] << ", "
-    << type[5] << "}";
 }
 
 io::ostream& operator<<(io::ostream& out, const RasterState& rs) {
@@ -472,7 +458,7 @@ io::ostream& operator<<(io::ostream& out, filament::backend::Viewport const& vie
 
 io::ostream& operator<<(io::ostream& out, TargetBufferFlags flags) {
     // TODO: implement decoding of enum
-    out << uint8_t(flags);
+    out << uint32_t(flags);
     return out;
 }
 
@@ -492,19 +478,71 @@ io::ostream& operator<<(io::ostream& out, RenderPassParams const& params) {
 }
 
 io::ostream& operator<<(io::ostream& out, MRT const& mrt) {
-    // TODO: implement decoding of enum
+    // TODO: implement decoding of MRT
     out << "MRT{...}";
     return out;
 }
 
+io::ostream& operator<<(io::ostream& out, ShaderStage shaderStage) {
+    switch (shaderStage) {
+        CASE(ShaderStage, VERTEX)
+        CASE(ShaderStage, FRAGMENT)
+        CASE(ShaderStage, COMPUTE)
+    }
+    return out;
+}
+
+io::ostream& operator<<(io::ostream& out, CompilerPriorityQueue compilerPriorityQueue) {
+    switch (compilerPriorityQueue) {
+        CASE(CompilerPriorityQueue, HIGH)
+        CASE(CompilerPriorityQueue, LOW)
+    }
+    return out;
+}
+
+io::ostream& operator<<(io::ostream& out, TextureUsage usage) {
+    // TODO: implement decoding of TextureUsage bitfield
+    out << uint32_t(usage);
+    return out;
+}
+
+io::ostream& operator<<(io::ostream& out, PushConstantVariant pushConstantVariant) {
+    std::visit([&](auto&& arg) {
+        out << arg;
+    }, pushConstantVariant);
+    return out;
+}
+
+io::ostream& operator<<(io::ostream& out, DescriptorSetLayout const& dsl) {
+    // TODO: implement decoding of DescriptorSetLayout
+    out << "DescriptorSetLayout{...}";
+    return out;
+}
+
+io::ostream& operator<<(io::ostream& out, DescriptorSetOffsetArray const& dsa) {
+    // TODO: implement decoding of DescriptorSetOffsetArray
+    out << "DescriptorSetOffsetArray{...}";
+    return out;
+}
+
 io::ostream& operator<<(io::ostream& stream, ShaderStageFlags stageFlags) {
-    unsigned int v = +stageFlags.vertex + 2u * +stageFlags.fragment;
     const char* str = nullptr;
-    switch (v & 3) {
-        case 0: str = "{ }"; break;
-        case 1: str = "{ vertex }"; break;
-        case 2: str = "{ fragment }"; break;
-        case 3: str = "{ vertex | fragment }"; break;
+    switch (stageFlags) {
+        case ShaderStageFlags::NONE:
+            str = "{ }";
+            break;
+        case ShaderStageFlags::VERTEX:
+            str = "{ vertex }";
+            break;
+        case ShaderStageFlags::FRAGMENT:
+            str = "{ fragment }";
+            break;
+        case ShaderStageFlags::COMPUTE:
+            str = "{ compute }";
+            break;
+        case ShaderStageFlags::ALL_SHADER_STAGE_FLAGS:
+            str = "{ vertex | fragment | compute }";
+            break;
     }
     return stream << str;
 }

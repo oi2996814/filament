@@ -47,6 +47,7 @@ set(LIBS
         geometry
         getopt
         image
+        imageio
         imgui
         ktxreader
         math
@@ -88,13 +89,23 @@ file(MAKE_DIRECTORY ${MATERIAL_DIR})
 file(MAKE_DIRECTORY ${RESOURCE_DIR})
 
 set(RESOURCE_BINS)
+
+set (MATC_FLAGS ${MATC_BASE_FLAGS})
+if (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "instanced")
+    set (MATC_FLAGS ${MATC_FLAGS} -PstereoscopicType=instanced)
+    add_definitions(-DFILAMENT_SAMPLES_STEREO_TYPE_INSTANCED)
+elseif (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "multiview")
+    set (MATC_FLAGS ${MATC_FLAGS} -PstereoscopicType=multiview)
+    add_definitions(-DFILAMENT_SAMPLES_STEREO_TYPE_MULTIVIEW)
+endif ()
+
 foreach (mat_src ${MATERIAL_SRCS})
     get_filename_component(localname "${mat_src}" NAME_WE)
     get_filename_component(fullname "${mat_src}" ABSOLUTE)
     set(output_path "${MATERIAL_DIR}/${localname}.filamat")
     add_custom_command(
             OUTPUT ${output_path}
-            COMMAND matc ${MATC_BASE_FLAGS} -o ${output_path} ${fullname}
+            COMMAND matc ${MATC_FLAGS} -o ${output_path} ${fullname}
             MAIN_DEPENDENCY ${mat_src}
             DEPENDS matc
             COMMENT "Compiling material ${mat_src} to ${output_path}"
@@ -120,6 +131,7 @@ set(DUMMY_SRC "${RESOURCE_DIR}/dummy.c")
 add_custom_command(OUTPUT ${DUMMY_SRC} COMMAND echo "//" > ${DUMMY_SRC})
 
 add_library(filamentapp-resources ${DUMMY_SRC} ${RESGEN_SOURCE})
+set_target_properties(filamentapp-resources PROPERTIES FOLDER Samples/Resources)
 
 # ==================================================================================================
 # Include and target definitions
@@ -132,6 +144,7 @@ add_library(${TARGET} STATIC ${PUBLIC_HDRS} ${SRCS})
 target_link_libraries(${TARGET} PUBLIC ${LIBS} filamentapp-resources)
 
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
+set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
 target_include_directories(${TARGET} PRIVATE ${GENERATION_ROOT})
 
 # ==================================================================================================
@@ -139,9 +152,7 @@ target_include_directories(${TARGET} PRIVATE ${GENERATION_ROOT})
 # ==================================================================================================
 
 if (MSVC)
-    target_compile_options(${TARGET} PRIVATE $<$<CONFIG:Release>:/fp:fast>)
 else()
-    target_compile_options(${TARGET} PRIVATE $<$<CONFIG:Release>:-ffast-math>)
     target_compile_options(${TARGET} PRIVATE -Wno-deprecated-register)
 endif()
 

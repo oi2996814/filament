@@ -21,13 +21,20 @@
 #include "RenderPass.h"
 
 #include "fg/FrameGraphId.h"
+#include "fg/FrameGraphTexture.h"
+
+#include <filament/Viewport.h>
 
 #include <backend/DriverEnums.h>
 #include <backend/PixelBufferDescriptor.h>
 
+#include <math/vec2.h>
 #include <math/vec4.h>
 
 #include <stdint.h>
+
+#include <optional>
+#include <utility>
 
 namespace filament {
 
@@ -40,14 +47,11 @@ class RendererUtils {
 public:
 
     struct ColorPassConfig {
-        // Rendering viewport width (e.g. scaled down viewport from dynamic resolution)
-        uint32_t width;
-        // Rendering viewport height (e.g. scaled down viewport from dynamic resolution)
-        uint32_t height;
-        // Rendering offset within the viewport (e.g. non-zero when we have guard bands)
-        uint32_t xoffset;
-        // Rendering offset within the viewport (e.g. non-zero when we have guard bands)
-        uint32_t yoffset;
+        // Rendering viewport (e.g. scaled down viewport from dynamic resolution)
+        Viewport physicalViewport;
+        // Logical viewport (e.g. left-bottom non-zero when we have guard bands), origin
+        // relative to physicalViewport
+        Viewport logicalViewport;
         // dynamic resolution scale
         math::float2 scale;
         // HDR format
@@ -58,21 +62,46 @@ public:
         backend::TargetBufferFlags clearFlags;
         // Clear color
         math::float4 clearColor = {};
+        // Clear stencil
+        uint8_t clearStencil = 0u;
         // Lod offset for the SSR passes
         float ssrLodOffset;
         // Contact shadow enabled?
         bool hasContactShadows;
+        // Screen space reflections enabled
+        bool hasScreenSpaceReflectionsOrRefractions;
+        // Use a depth format with a stencil component.
+        bool enabledStencilBuffer;
+        // whether the screenspace reflections history buffer is initialized
+        bool screenSpaceReflectionHistoryNotReady;
     };
 
-    static FrameGraphId<FrameGraphTexture> colorPass(
+    struct ColorPassInput {
+        FrameGraphId<FrameGraphTexture> linearColor;
+        FrameGraphId<FrameGraphTexture> tonemappedColor;
+        FrameGraphId<FrameGraphTexture> depth;
+        FrameGraphId<FrameGraphTexture> shadows;
+        FrameGraphId<FrameGraphTexture> ssao;
+        FrameGraphId<FrameGraphTexture> ssr;
+        FrameGraphId<FrameGraphTexture> structure;
+    };
+    struct ColorPassOutput {
+        FrameGraphId<FrameGraphTexture> linearColor;
+        FrameGraphId<FrameGraphTexture> tonemappedColor;
+        FrameGraphId<FrameGraphTexture> depth;
+    };
+
+    static ColorPassOutput colorPass(
             FrameGraph& fg, const char* name, FEngine& engine, FView const& view,
+            ColorPassInput const& colorPassInput,
             FrameGraphTexture::Descriptor const& colorBufferDesc,
             ColorPassConfig const& config,
             PostProcessManager::ColorGradingConfig colorGradingConfig,
-            RenderPass::Executor const& passExecutor) noexcept;
+            RenderPass::Executor passExecutor) noexcept;
 
-    static FrameGraphId<FrameGraphTexture> refractionPass(
+    static std::optional<ColorPassOutput> refractionPass(
             FrameGraph& fg, FEngine& engine, FView const& view,
+            ColorPassInput colorPassInput,
             ColorPassConfig config,
             PostProcessManager::ScreenSpaceRefConfig const& ssrConfig,
             PostProcessManager::ColorGradingConfig colorGradingConfig,

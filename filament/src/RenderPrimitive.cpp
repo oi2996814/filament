@@ -16,71 +16,63 @@
 
 #include "RenderPrimitive.h"
 
-#include "details/Engine.h"
+#include <filament/RenderableManager.h>
+#include <filament/MaterialEnums.h>
+
 #include "details/IndexBuffer.h"
-#include "details/Material.h"
+#include "details/MaterialInstance.h"
 #include "details/VertexBuffer.h"
+
+#include <private/backend/CommandStream.h>
+#include <backend/DriverApiForward.h>
 
 #include <utils/debug.h>
 
+#include <stddef.h>
+
 namespace filament {
 
-void FRenderPrimitive::init(backend::DriverApi& driver,
-        const RenderableManager::Builder::Entry& entry) noexcept {
+void FRenderPrimitive::init(HwRenderPrimitiveFactory& factory, backend::DriverApi& driver,
+        FRenderableManager::Entry const& entry) noexcept {
 
     assert_invariant(entry.materialInstance);
 
-    mHandle = driver.createRenderPrimitive();
-    mMaterialInstance = upcast(entry.materialInstance);
+    mMaterialInstance = downcast(entry.materialInstance);
     mBlendOrder = entry.blendOrder;
 
     if (entry.indices && entry.vertices) {
-        FVertexBuffer* vertexBuffer = upcast(entry.vertices);
-        FIndexBuffer* indexBuffer = upcast(entry.indices);
-
-        AttributeBitset enabledAttributes = vertexBuffer->getDeclaredAttributes();
-
-        auto const& ebh = vertexBuffer->getHwHandle();
-        auto const& ibh = indexBuffer->getHwHandle();
-
-        driver.setRenderPrimitiveBuffer(mHandle, ebh, ibh);
-        driver.setRenderPrimitiveRange(mHandle, entry.type,
-                (uint32_t)entry.offset, (uint32_t)entry.minIndex, (uint32_t)entry.maxIndex,
-                (uint32_t)entry.count);
-
-        mPrimitiveType = entry.type;
-        mEnabledAttributes = enabledAttributes;
+        FVertexBuffer const* vertexBuffer = downcast(entry.vertices);
+        FIndexBuffer const* indexBuffer = downcast(entry.indices);
+        set(factory, driver, entry.type, vertexBuffer, indexBuffer, entry.offset, entry.count);
     }
 }
 
-void FRenderPrimitive::terminate(FEngine& engine) {
-    FEngine::DriverApi& driver = engine.getDriverApi();
-    driver.destroyRenderPrimitive(mHandle);
+void FRenderPrimitive::terminate(HwRenderPrimitiveFactory& factory, backend::DriverApi& driver) {
+    if (mHandle) {
+        factory.destroy(driver, mHandle);
+    }
 }
 
-void FRenderPrimitive::set(FEngine& engine, RenderableManager::PrimitiveType type,
-        FVertexBuffer* vertices, FIndexBuffer* indices, size_t offset,
-        size_t minIndex, size_t maxIndex, size_t count) noexcept {
-    AttributeBitset enabledAttributes = vertices->getDeclaredAttributes();
-    auto const& ebh = vertices->getHwHandle();
-    auto const& ibh = indices->getHwHandle();
+void FRenderPrimitive::set(HwRenderPrimitiveFactory& factory, backend::DriverApi& driver,
+        RenderableManager::PrimitiveType const type,
+        FVertexBuffer const* vertexBuffer, FIndexBuffer const* indexBuffer,
+        size_t const offset, size_t const count) noexcept {
+    if (mHandle) {
+        factory.destroy(driver, mHandle);
+    }
 
-    FEngine::DriverApi& driver = engine.getDriverApi();
+    AttributeBitset const enabledAttributes = vertexBuffer->getDeclaredAttributes();
 
-    driver.setRenderPrimitiveBuffer(mHandle, ebh, ibh);
-    driver.setRenderPrimitiveRange(mHandle, type,
-            (uint32_t)offset, (uint32_t)minIndex, (uint32_t)maxIndex, (uint32_t)count);
+    auto const& ebh = vertexBuffer->getHwHandle();
+    auto const& ibh = indexBuffer->getHwHandle();
+
+    mHandle = factory.create(driver, ebh, ibh, type);
+    mVertexBufferInfoHandle = vertexBuffer->getVertexBufferInfoHandle();
 
     mPrimitiveType = type;
+    mIndexOffset = offset;
+    mIndexCount = count;
     mEnabledAttributes = enabledAttributes;
-}
-
-void FRenderPrimitive::set(FEngine& engine, RenderableManager::PrimitiveType type, size_t offset,
-        size_t minIndex, size_t maxIndex, size_t count) noexcept {
-    FEngine::DriverApi& driver = engine.getDriverApi();
-    driver.setRenderPrimitiveRange(mHandle, type,
-            (uint32_t)offset, (uint32_t)minIndex, (uint32_t)maxIndex, (uint32_t)count);
-    mPrimitiveType = type;
 }
 
 } // namespace filament

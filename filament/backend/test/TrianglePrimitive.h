@@ -40,8 +40,11 @@ public:
 
     using PrimitiveHandle = filament::backend::Handle<filament::backend::HwRenderPrimitive>;
     using BufferObjectHandle = filament::backend::Handle<filament::backend::HwBufferObject>;
+    using VertexInfoHandle = filament::backend::Handle<filament::backend::HwVertexBufferInfo>;
     using VertexHandle = filament::backend::Handle<filament::backend::HwVertexBuffer>;
     using IndexHandle = filament::backend::Handle<filament::backend::HwIndexBuffer>;
+
+    using index_type = uint32_t;
 
     TrianglePrimitive(filament::backend::DriverApi& driverApi, bool allocateLargeBuffers = false);
     ~TrianglePrimitive();
@@ -49,8 +52,8 @@ public:
     PrimitiveHandle getRenderPrimitive() const noexcept;
 
     void updateVertices(const filament::math::float2 vertices[3]) noexcept;
-    void updateIndices(const short* indices) noexcept;
-    void updateIndices(const short* indices, int count, int offset) noexcept;
+    void updateIndices(const index_type* indices) noexcept;
+    void updateIndices(const index_type* indices, int count, int offset) noexcept;
 
 private:
 
@@ -61,6 +64,7 @@ private:
 
     PrimitiveHandle mRenderPrimitive;
     BufferObjectHandle mBufferObject;
+    VertexInfoHandle mVertexBufferInfo;
     VertexHandle mVertexBuffer;
     IndexHandle mIndexBuffer;
 

@@ -24,6 +24,9 @@
 #include <math/vec3.h>
 #include <math/vec4.h>
 
+#include <stdint.h>
+#include <stddef.h>
+
 namespace filament {
 
 //! RGB color in linear space
@@ -40,33 +43,33 @@ using sRGBColorA  = math::float4;
 
 //! types of RGB colors
 enum class RgbType : uint8_t {
-    sRGB,   //!< the color is defined in sRGB space
-    LINEAR, //!< the color is defined in linear space
+    sRGB,   //!< the color is defined in Rec.709-sRGB-D65 (sRGB) space
+    LINEAR, //!< the color is defined in Rec.709-Linear-D65 ("linear sRGB") space
 };
 
 //! types of RGBA colors
 enum class RgbaType : uint8_t {
     /**
-     * the color is defined in sRGB space and the RGB values
-     * have not been premultiplied by the alpha (for instance, a 50%
+     * the color is defined in Rec.709-sRGB-D65 (sRGB) space and the RGB values
+     * have not been pre-multiplied by the alpha (for instance, a 50%
      * transparent red is <1,0,0,0.5>)
      */
     sRGB,
     /**
-     * the color is defined in linear space and the RGB values
-     * have not been premultiplied by the alpha (for instance, a 50%
+     * the color is defined in Rec.709-Linear-D65 ("linear sRGB") space and the
+     * RGB values have not been pre-multiplied by the alpha (for instance, a 50%
      * transparent red is <1,0,0,0.5>)
      */
     LINEAR,
     /**
-     * the color is defined in sRGB space and the RGB values
-     * have been premultiplied by the alpha (for instance, a 50%
+     * the color is defined in Rec.709-sRGB-D65 (sRGB) space and the RGB values
+     * have been pre-multiplied by the alpha (for instance, a 50%
      * transparent red is <0.5,0,0,0.5>)
      */
     PREMULTIPLIED_sRGB,
     /**
-     * the color is defined in linear space and the RGB values
-     * have been premultiplied by the alpha (for instance, a 50%
+     * the color is defined in Rec.709-Linear-D65 ("linear sRGB") space and the
+     * RGB values have been pre-multiplied by the alpha (for instance, a 50%
      * transparent red is <0.5,0,0,0.5>)
      */
     PREMULTIPLIED_LINEAR
@@ -93,40 +96,44 @@ public:
     template<ColorConversion = ACCURATE>
     static LinearColor toLinear(sRGBColor const& color);
 
-    //! converts an RGB color in linear space to an RGB color in sRGB space
+    /**
+     * Converts an RGB color in Rec.709-Linear-D65 ("linear sRGB") space to an
+     * RGB color in Rec.709-sRGB-D65 (sRGB) space.
+     */
     template<ColorConversion = ACCURATE>
     static sRGBColor toSRGB(LinearColor const& color);
 
     /**
-     * converts an RGBA color in sRGB space to an RGBA color in linear space
-     * the alpha component is left unmodified
+     * Converts an RGBA color in Rec.709-sRGB-D65 (sRGB) space to an RGBA color in
+     * Rec.709-Linear-D65 ("linear sRGB") space the alpha component is left unmodified.
      */
     template<ColorConversion = ACCURATE>
     static LinearColorA toLinear(sRGBColorA const& color);
 
     /**
-     * converts an RGBA color in linear space to an RGBA color in sRGB space
-     * the alpha component is left unmodified
+     * Converts an RGBA color in Rec.709-Linear-D65 ("linear sRGB") space to
+     * an RGBA color in Rec.709-sRGB-D65 (sRGB) space the alpha component is
+     * left unmodified.
      */
     template<ColorConversion = ACCURATE>
     static sRGBColorA toSRGB(LinearColorA const& color);
 
     /**
-     * converts a correlated color temperature to a linear RGB color in sRGB
+     * Converts a correlated color temperature to a linear RGB color in sRGB
      * space the temperature must be expressed in kelvin and must be in the
-     * range 1,000K to 15,000K
+     * range 1,000K to 15,000K.
      */
     static LinearColor cct(float K);
 
     /**
-     * converts a CIE standard illuminant series D to a linear RGB color in
+     * Converts a CIE standard illuminant series D to a linear RGB color in
      * sRGB space the temperature must be expressed in kelvin and must be in
      * the range 4,000K to 25,000K
      */
     static LinearColor illuminantD(float K);
 
     /**
-     * computes the Beer-Lambert absorption coefficients from the specified
+     * Computes the Beer-Lambert absorption coefficients from the specified
      * transmittance color and distance. The computed absorption will guarantee
      * the white light will become the specified color at the specified distance.
      * The output of this function can be used as the absorption parameter of
@@ -187,7 +194,7 @@ inline sRGBColorA Color::toSRGB<ACCURATE>(LinearColorA const& color) {
 }
 
 inline LinearColor Color::toLinear(RgbType type, math::float3 color) {
-    return (type == RgbType::LINEAR) ? color : Color::toLinear<ACCURATE>(color);
+    return (type == RgbType::LINEAR) ? color : toLinear<ACCURATE>(color);
 }
 
 // converts an RGBA color to linear space
@@ -195,11 +202,11 @@ inline LinearColor Color::toLinear(RgbType type, math::float3 color) {
 inline LinearColorA Color::toLinear(RgbaType type, math::float4 color) {
     switch (type) {
         case RgbaType::sRGB:
-            return Color::toLinear<ACCURATE>(color) * math::float4{color.a, color.a, color.a, 1.0f};
+            return toLinear<ACCURATE>(color) * math::float4{color.a, color.a, color.a, 1.0f};
         case RgbaType::LINEAR:
             return color * math::float4{color.a, color.a, color.a, 1.0f};
         case RgbaType::PREMULTIPLIED_sRGB:
-            return Color::toLinear<ACCURATE>(color);
+            return toLinear<ACCURATE>(color);
         case RgbaType::PREMULTIPLIED_LINEAR:
             return color;
     }

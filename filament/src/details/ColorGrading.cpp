@@ -21,23 +21,28 @@
 
 #include "FilamentAPI-impl.h"
 
-#include "ColorSpace.h"
+#include "ColorSpaceUtils.h"
+
+#include <filament/ColorSpace.h>
 
 #include <math/vec2.h>
 #include <math/vec3.h>
 #include <math/vec4.h>
 
 #include <utils/JobSystem.h>
-#include <utils/SpinLock.h>
+#include <utils/Mutex.h>
 #include <utils/Systrace.h>
 
-#include <math.h>
-#include <stdlib.h>
+#include <cmath>
+#include <cstdlib>
+#include <mutex>
+#include <tuple>
 
 namespace filament {
 
 using namespace utils;
 using namespace math;
+using namespace color;
 using namespace backend;
 
 //------------------------------------------------------------------------------
@@ -47,10 +52,14 @@ using namespace backend;
 struct ColorGrading::BuilderDetails {
     const ToneMapper* toneMapper = nullptr;
 
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
     ToneMapping toneMapping = ToneMapping::ACES_LEGACY;
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
 
     bool hasAdjustments = false;
 
@@ -89,6 +98,9 @@ struct ColorGrading::BuilderDetails {
     float3 midPoint         = {1.0f};
     float3 highlightScale   = {1.0f};
 
+    // Output color space
+    ColorSpace outputColorSpace = Rec709-sRGB-D65;
+
     bool operator!=(const BuilderDetails &rhs) const {
         return !(rhs == *this);
     }
@@ -117,33 +129,34 @@ struct ColorGrading::BuilderDetails {
                saturation == rhs.saturation &&
                shadowGamma == rhs.shadowGamma &&
                midPoint == rhs.midPoint &&
-               highlightScale == rhs.highlightScale;
+               highlightScale == rhs.highlightScale &&
+               outputColorSpace == rhs.outputColorSpace;
     }
 };
 
 using BuilderType = ColorGrading;
 BuilderType::Builder::Builder() noexcept = default;
 BuilderType::Builder::~Builder() noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder&& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder const& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder&& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder const& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder&& rhs) noexcept = default;
 
-ColorGrading::Builder& ColorGrading::Builder::quality(ColorGrading::QualityLevel qualityLevel) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::quality(QualityLevel const qualityLevel) noexcept {
     switch (qualityLevel) {
-        case ColorGrading::QualityLevel::LOW:
+        case QualityLevel::LOW:
             mImpl->format = LutFormat::INTEGER;
             mImpl->dimension = 16;
             break;
-        case ColorGrading::QualityLevel::MEDIUM:
+        case QualityLevel::MEDIUM:
             mImpl->format = LutFormat::INTEGER;
             mImpl->dimension = 32;
             break;
-        case ColorGrading::QualityLevel::HIGH:
+        case QualityLevel::HIGH:
             mImpl->format = LutFormat::FLOAT;
             mImpl->dimension = 32;
             break;
-        case ColorGrading::QualityLevel::ULTRA:
+        case QualityLevel::ULTRA:
             mImpl->format = LutFormat::FLOAT;
             mImpl->dimension = 64;
             break;
@@ -151,13 +164,13 @@ ColorGrading::Builder& ColorGrading::Builder::quality(ColorGrading::QualityLevel
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::format(LutFormat format) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::format(LutFormat const format) noexcept {
     mImpl->format = format;
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::dimensions(uint8_t dim) noexcept {
-    mImpl->dimension = math::clamp(+dim, 16, 64);
+ColorGrading::Builder& ColorGrading::Builder::dimensions(uint8_t const dim) noexcept {
+    mImpl->dimension = clamp(+dim, 16, 64);
     return *this;
 }
 
@@ -166,32 +179,32 @@ ColorGrading::Builder& ColorGrading::Builder::toneMapper(const ToneMapper* toneM
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::toneMapping(ToneMapping toneMapping) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::toneMapping(ToneMapping const toneMapping) noexcept {
     mImpl->toneMapping = toneMapping;
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::luminanceScaling(bool luminanceScaling) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::luminanceScaling(bool const luminanceScaling) noexcept {
     mImpl->luminanceScaling = luminanceScaling;
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::gamutMapping(bool gamutMapping) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::gamutMapping(bool const gamutMapping) noexcept {
     mImpl->gamutMapping = gamutMapping;
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::exposure(float exposure) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::exposure(float const exposure) noexcept {
     mImpl->exposure = exposure;
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::nightAdaptation(float adaptation) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::nightAdaptation(float const adaptation) noexcept {
     mImpl->nightAdaptation = saturate(adaptation);
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::whiteBalance(float temperature, float tint) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::whiteBalance(float const temperature, float const tint) noexcept {
     mImpl->whiteBalance = float2{
         clamp(temperature, -1.0f, 1.0f),
         clamp(tint, -1.0f, 1.0f)
@@ -230,17 +243,17 @@ ColorGrading::Builder& ColorGrading::Builder::slopeOffsetPower(
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::contrast(float contrast) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::contrast(float const contrast) noexcept {
     mImpl->contrast = clamp(contrast, 0.0f, 2.0f);
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::vibrance(float vibrance) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::vibrance(float const vibrance) noexcept {
     mImpl->vibrance = clamp(vibrance, 0.0f, 2.0f);
     return *this;
 }
 
-ColorGrading::Builder& ColorGrading::Builder::saturation(float saturation) noexcept {
+ColorGrading::Builder& ColorGrading::Builder::saturation(float const saturation) noexcept {
     mImpl->saturation = clamp(saturation, 0.0f, 2.0f);
     return *this;
 }
@@ -253,8 +266,16 @@ ColorGrading::Builder& ColorGrading::Builder::curves(
     return *this;
 }
 
+ColorGrading::Builder& ColorGrading::Builder::outputColorSpace(
+        const ColorSpace& colorSpace) noexcept {
+    mImpl->outputColorSpace = colorSpace;
+    return *this;
+}
+
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 ColorGrading* ColorGrading::Builder::build(Engine& engine) {
     // We want to see if any of the default adjustment values have been modified
     // We skip the tonemapping operator on purpose since we always want to apply it
@@ -284,7 +305,7 @@ ColorGrading* ColorGrading::Builder::build(Engine& engine) {
         }
     }
 
-    FColorGrading* colorGrading = upcast(engine).createColorGrading(*this);
+    FColorGrading* colorGrading = downcast(engine).createColorGrading(*this);
 
     if (needToneMapper) {
         delete mImpl->toneMapper;
@@ -294,14 +315,16 @@ ColorGrading* ColorGrading::Builder::build(Engine& engine) {
     return colorGrading;
 }
 
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
 
 //------------------------------------------------------------------------------
 // Exposure
 //------------------------------------------------------------------------------
 
 UTILS_ALWAYS_INLINE
-inline float3 adjustExposure(float3 v, float exposure) {
+inline float3 adjustExposure(float3 const v, float const exposure) {
     return v * std::exp2(exposure);
 }
 
@@ -422,7 +445,7 @@ float3 scotopicAdaptation(float3 v, float nightAdaptation) noexcept {
 // the von Kries method, using the CIECAT16 transform.
 // See https://en.wikipedia.org/wiki/Chromatic_adaptation
 // See https://en.wikipedia.org/wiki/CIECAM02#Chromatic_adaptation
-constexpr mat3f adaptationTransform(float2 whiteBalance) noexcept {
+constexpr mat3f adaptationTransform(float2 const whiteBalance) noexcept {
     // See Mathematica notebook in docs/math/White Balance.nb
     float k = whiteBalance.x; // temperature
     float t = whiteBalance.y; // tint
@@ -435,7 +458,7 @@ constexpr mat3f adaptationTransform(float2 whiteBalance) noexcept {
 }
 
 UTILS_ALWAYS_INLINE
-inline float3 chromaticAdaptation(float3 v, mat3f adaptationTransform) {
+inline float3 chromaticAdaptation(float3 const v, mat3f adaptationTransform) {
     return adaptationTransform * v;
 }
 
@@ -484,7 +507,7 @@ inline float3 colorDecisionList(float3 v, float3 slope, float3 offset, float3 po
 }
 
 UTILS_ALWAYS_INLINE
-inline constexpr float3 contrast(float3 v, float contrast) {
+inline constexpr float3 contrast(float3 const v, float const contrast) {
     // Matches contrast as applied in DaVinci Resolve
     return MIDDLE_GRAY_ACEScct + contrast * (v - MIDDLE_GRAY_ACEScct);
 }
@@ -558,63 +581,72 @@ static float3 luminanceScaling(float3 x,
 // Quality
 //------------------------------------------------------------------------------
 
-static void selectLutTextureParams(ColorGrading::LutFormat lutFormat,
-        TextureFormat& internalFormat, PixelDataFormat& format, PixelDataType& type) noexcept {
+static std::tuple<TextureFormat, PixelDataFormat, PixelDataType>
+        selectLutTextureParams(ColorGrading::LutFormat const lutFormat) noexcept {
     // We use RGBA16F for high quality modes instead of RGB16F because RGB16F
     // is not supported everywhere
     switch (lutFormat) {
         case ColorGrading::LutFormat::INTEGER:
-            internalFormat = TextureFormat::RGB10_A2;
-            format = PixelDataFormat::RGBA;
-            type = PixelDataType::UINT_2_10_10_10_REV;
-            break;
+            return { TextureFormat::RGB10_A2, PixelDataFormat::RGBA, PixelDataType::UINT_2_10_10_10_REV };
         case ColorGrading::LutFormat::FLOAT:
-            internalFormat = TextureFormat::RGBA16F;
-            format = PixelDataFormat::RGBA;
-            type = PixelDataType::HALF;
-            break;
+            return { TextureFormat::RGBA16F, PixelDataFormat::RGBA, PixelDataType::HALF };
     }
 }
 
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 // The following functions exist to preserve backward compatibility with the
 // `FILMIC` set via the deprecated `ToneMapping` API. Selecting `ToneMapping::FILMIC`
 // forces post-processing to be performed in sRGB to guarantee that the inverse tone
 // mapping function in the shaders will match the forward tone mapping step exactly.
 
-static mat3f selectColorGradingTransformIn(ColorGrading::ToneMapping toneMapping) noexcept {
+static mat3f selectColorGradingTransformIn(ColorGrading::ToneMapping const toneMapping) noexcept {
     if (toneMapping == ColorGrading::ToneMapping::FILMIC) {
         return mat3f{};
     }
     return sRGB_to_Rec2020;
 }
 
-static mat3f selectColorGradingTransformOut(ColorGrading::ToneMapping toneMapping) noexcept {
+static mat3f selectColorGradingTransformOut(ColorGrading::ToneMapping const toneMapping) noexcept {
     if (toneMapping == ColorGrading::ToneMapping::FILMIC) {
         return mat3f{};
     }
     return Rec2020_to_sRGB;
 }
 
-static float3 selectColorGradingLuminance(ColorGrading::ToneMapping toneMapping) noexcept {
+static float3 selectColorGradingLuminance(ColorGrading::ToneMapping const toneMapping) noexcept {
     if (toneMapping == ColorGrading::ToneMapping::FILMIC) {
         return LUMINANCE_Rec709;
     }
     return LUMINANCE_Rec2020;
 }
+#if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
+
+using ColorTransform = float3(*)(float3);
+
+static ColorTransform selectOETF(const ColorSpace& colorSpace) noexcept {
+    if (colorSpace.getTransferFunction() == Linear) {
+        return OETF_Linear;
+    }
+    return OETF_sRGB;
+}
 
 //------------------------------------------------------------------------------
 // Color grading implementation
 //------------------------------------------------------------------------------
 
 struct Config {
-    size_t lutDimension;
+    size_t lutDimension{};
     mat3f  adaptationTransform;
     mat3f  colorGradingIn;
     mat3f  colorGradingOut;
-    float3 colorGradingLuminance;
+    float3 colorGradingLuminance{};
+
+    ColorTransform oetf;
 };
 
 // Inside the FColorGrading constructor, TSAN sporadically detects a data race on the config struct;
@@ -629,14 +661,15 @@ FColorGrading::FColorGrading(FEngine& engine, const Builder& builder) {
     Config c;
     // This lock protects the data inside Config, which is written to by the Filament thread,
     // and read from multiple Job threads.
-    utils::SpinLock configLock;
+    Mutex configLock;
     {
-        std::lock_guard<utils::SpinLock> lock(configLock);
+        std::lock_guard<Mutex> const lock(configLock);
         c.lutDimension          = builder->dimension;
         c.adaptationTransform   = adaptationTransform(builder->whiteBalance);
         c.colorGradingIn        = selectColorGradingTransformIn(builder->toneMapping);
         c.colorGradingOut       = selectColorGradingTransformOut(builder->toneMapping);
         c.colorGradingLuminance = selectColorGradingLuminance(builder->toneMapping);
+        c.oetf                  = selectOETF(builder->outputColorSpace);
     }
 
     mDimension = c.lutDimension;
@@ -645,10 +678,8 @@ FColorGrading::FColorGrading(FEngine& engine, const Builder& builder) {
     size_t elementSize = sizeof(half4);
     void* data = malloc(lutElementCount * elementSize);
 
-    TextureFormat textureFormat;
-    PixelDataFormat format;
-    PixelDataType type;
-    selectLutTextureParams(builder->format, textureFormat, format, type);
+    auto [textureFormat, format, type] = selectLutTextureParams(builder->format);
+    assert_invariant(FTexture::isTextureFormatSupported(engine, textureFormat));
     assert_invariant(FTexture::validatePixelFormatAndType(textureFormat, format, type));
 
     void* converted = nullptr;
@@ -669,7 +700,7 @@ FColorGrading::FColorGrading(FEngine& engine, const Builder& builder) {
                 [data, converted, b, &c, &configLock, builder](JobSystem&, JobSystem::Job*) {
             Config config;
             {
-                std::lock_guard<utils::SpinLock> lock(configLock);
+                std::lock_guard<Mutex> lock(configLock);
                 config = c;
             }
             half4* UTILS_RESTRICT p = (half4*) data + b * config.lutDimension * config.lutDimension;
@@ -759,7 +790,7 @@ FColorGrading::FColorGrading(FEngine& engine, const Builder& builder) {
                     v = saturate(v);
 
                     // Apply OETF
-                    v = OETF_sRGB(v);
+                    v = c.oetf(v);
 
                     *p++ = half4{v, 0.0f};
                 }
@@ -773,7 +804,9 @@ FColorGrading::FColorGrading(FEngine& engine, const Builder& builder) {
                 // we use a vectorize width of 8 because, on ARMv8 it allows the compiler to write eight
                 // 32-bits results in one go.
                 const size_t count = (config.lutDimension * config.lutDimension) & ~0x7u; // tell the compiler that we're a multiple of 8
+#if defined(__clang__)
                 #pragma clang loop vectorize_width(8)
+#endif
                 for (size_t i = 0; i < count; ++i) {
                     float4 v{src[i]};
                     uint32_t pr = uint32_t(std::floor(v.x * 1023.0f + 0.5f));

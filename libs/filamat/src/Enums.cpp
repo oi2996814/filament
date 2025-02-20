@@ -41,12 +41,15 @@ std::unordered_map<std::string, Property> Enums::mStringToProperty = {
         { "emissive",            Property::EMISSIVE },
         { "normal",              Property::NORMAL },
         { "postLightingColor",   Property::POST_LIGHTING_COLOR },
+        { "postLightingMixFactor",  Property::POST_LIGHTING_MIX_FACTOR },
         { "clipSpaceTransform",  Property::CLIP_SPACE_TRANSFORM },
         { "absorption",          Property::ABSORPTION },
         { "transmission",        Property::TRANSMISSION },
         { "ior",                 Property::IOR },
         { "microThickness",      Property::MICRO_THICKNESS },
         { "bentNormal",          Property::BENT_NORMAL },
+        { "specularFactor",      Property::SPECULAR_FACTOR },
+        { "specularColorFactor",  Property::SPECULAR_COLOR_FACTOR }
 };
 
 template <>
@@ -83,11 +86,12 @@ std::unordered_map<std::string, UniformType>& Enums::getMap<UniformType>() noexc
 };
 
 std::unordered_map<std::string, SamplerType> Enums::mStringToSamplerType = {
-        { "sampler2d",       SamplerType::SAMPLER_2D },
-        { "sampler2dArray",  SamplerType::SAMPLER_2D_ARRAY },
-        { "sampler3d",       SamplerType::SAMPLER_3D },
-        { "samplerCubemap",  SamplerType::SAMPLER_CUBEMAP },
-        { "samplerExternal", SamplerType::SAMPLER_EXTERNAL },
+        { "sampler2d",           SamplerType::SAMPLER_2D },
+        { "sampler2dArray",      SamplerType::SAMPLER_2D_ARRAY },
+        { "sampler3d",           SamplerType::SAMPLER_3D },
+        { "samplerCubemap",      SamplerType::SAMPLER_CUBEMAP },
+        { "samplerExternal",     SamplerType::SAMPLER_EXTERNAL },
+        { "samplerCubemapArray", SamplerType::SAMPLER_CUBEMAP_ARRAY },
 };
 
 template <>
@@ -157,6 +161,17 @@ std::unordered_map<std::string, SamplerFormat> Enums::mStringToSamplerFormat = {
 template <>
 std::unordered_map<std::string, SamplerFormat>& Enums::getMap<SamplerFormat>() noexcept {
     return mStringToSamplerFormat;
+};
+
+std::unordered_map<std::string, ConstantType > Enums::mStringToConstantType = {
+        { "int",   ConstantType::INT },
+        { "float", ConstantType::FLOAT },
+        { "bool",  ConstantType::BOOL },
+};
+
+template <>
+std::unordered_map<std::string, ConstantType>& Enums::getMap<ConstantType>() noexcept {
+    return mStringToConstantType;
 };
 
 } // namespace filamat

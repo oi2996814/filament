@@ -20,6 +20,7 @@
 #define TNT_FILAMENT_MATERIAL_ENUM_H
 
 #include <utils/bitset.h>
+#include <utils/BitmaskEnum.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -27,7 +28,7 @@
 namespace filament {
 
 // update this when a new version of filament wouldn't work with older materials
-static constexpr size_t MATERIAL_VERSION = 22;
+static constexpr size_t MATERIAL_VERSION = 57;
 
 /**
  * Supported shading models
@@ -79,6 +80,8 @@ enum class BlendingMode : uint8_t {
     MULTIPLY,
     //! material brightens what's behind it
     SCREEN,
+    //! custom blending function
+    CUSTOM,
 };
 
 /**
@@ -160,6 +163,7 @@ static constexpr size_t MAX_CUSTOM_ATTRIBUTES = 8;
 enum class MaterialDomain : uint8_t {
     SURFACE         = 0, //!< shaders applied to renderables
     POST_PROCESS    = 1, //!< shaders applied to rendered buffers
+    COMPUTE         = 2, //!< compute shader
 };
 
 /**
@@ -199,7 +203,7 @@ enum class ReflectionMode : uint8_t {
 // can't really use std::underlying_type<AttributeIndex>::type because the driver takes a uint32_t
 using AttributeBitset = utils::bitset32;
 
-static constexpr size_t MATERIAL_PROPERTIES_COUNT = 26;
+static constexpr size_t MATERIAL_PROPERTIES_COUNT = 29;
 enum class Property : uint8_t {
     BASE_COLOR,              //!< float4, all shading models
     ROUGHNESS,               //!< float,  lit shading models only
@@ -221,28 +225,39 @@ enum class Property : uint8_t {
     EMISSIVE,                //!< float4, all shading models
     NORMAL,                  //!< float3, all shading models only, except unlit
     POST_LIGHTING_COLOR,     //!< float4, all shading models
+    POST_LIGHTING_MIX_FACTOR,//!< float, all shading models
     CLIP_SPACE_TRANSFORM,    //!< mat4,   vertex shader only
     ABSORPTION,              //!< float3, how much light is absorbed by the material
     TRANSMISSION,            //!< float,  how much light is refracted through the material
     IOR,                     //!< float,  material's index of refraction
     MICRO_THICKNESS,         //!< float, thickness of the thin layer
     BENT_NORMAL,             //!< float3, all shading models only, except unlit
+    SPECULAR_FACTOR,         //!< float, lit shading models only, except subsurface and cloth
+    SPECULAR_COLOR_FACTOR,   //!< float3, lit shading models only, except subsurface and cloth
 
     // when adding new Properties, make sure to update MATERIAL_PROPERTIES_COUNT
 };
 
-enum class UserVariantFilterBit : uint32_t {
-    DIRECTIONAL_LIGHTING        = 0x01,
-    DYNAMIC_LIGHTING            = 0x02,
-    SHADOW_RECEIVER             = 0x04,
-    SKINNING                    = 0x08,
-    FOG                         = 0x10,
-    VSM                         = 0x20,
-    SSR                         = 0x40,
-};
-
 using UserVariantFilterMask = uint32_t;
 
+enum class UserVariantFilterBit : UserVariantFilterMask {
+    DIRECTIONAL_LIGHTING        = 0x01,         //!< Directional lighting
+    DYNAMIC_LIGHTING            = 0x02,         //!< Dynamic lighting
+    SHADOW_RECEIVER             = 0x04,         //!< Shadow receiver
+    SKINNING                    = 0x08,         //!< Skinning
+    FOG                         = 0x10,         //!< Fog
+    VSM                         = 0x20,         //!< Variance shadow maps
+    SSR                         = 0x40,         //!< Screen-space reflections
+    STE                         = 0x80,         //!< Instanced stereo rendering
+    ALL                         = 0xFF,
+};
+
 } // namespace filament
+
+template<> struct utils::EnableBitMaskOperators<filament::UserVariantFilterBit>
+        : public std::true_type {};
+
+template<> struct utils::EnableIntegerOperators<filament::UserVariantFilterBit>
+        : public std::true_type {};
 
 #endif

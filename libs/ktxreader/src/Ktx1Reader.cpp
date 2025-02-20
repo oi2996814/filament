@@ -76,25 +76,30 @@ Texture* createTexture(Engine* engine, const Ktx1Bundle& ktx, bool srgb,
     if (isCompressed(ktxinfo)) {
         if (ktx.isCubemap()) {
             for (uint32_t level = 0; level < nmips; ++level) {
-                ktx.getBlob({level, 0, 0}, &data, &size);
-                PixelBufferDescriptor pbd(data, size * 6, cdatatype, size, cb, cbuser);
-                texture->setImage(*engine, level, std::move(pbd), Texture::FaceOffsets(size));
+                ktx.getBlob({ level, 0, 0 }, &data, &size);
+                const uint32_t dim = texture->getWidth(level);
+                texture->setImage(*engine, level, 0, 0, 0, dim, dim, 6, {
+                        data, size * 6, cdatatype, size, cb, cbuser
+                });
             }
             return texture;
         }
         for (uint32_t level = 0; level < nmips; ++level) {
-            ktx.getBlob({level, 0, 0}, &data, &size);
-            PixelBufferDescriptor pbd(data, size, cdatatype, size, cb, cbuser);
-            texture->setImage(*engine, level, std::move(pbd));
+            ktx.getBlob({ level, 0, 0 }, &data, &size);
+            texture->setImage(*engine, level, {
+                    data, size, cdatatype, size, cb, cbuser
+            });
         }
         return texture;
     }
 
     if (ktx.isCubemap()) {
         for (uint32_t level = 0; level < nmips; ++level) {
-            ktx.getBlob({level, 0, 0}, &data, &size);
-            PixelBufferDescriptor pbd(data, size * 6, dataformat, datatype, cb, cbuser);
-            texture->setImage(*engine, level, std::move(pbd), Texture::FaceOffsets(size));
+            ktx.getBlob({ level, 0, 0 }, &data, &size);
+            const uint32_t dim = texture->getWidth(level);
+            texture->setImage(*engine, level, 0, 0, 0, dim, dim, 6, {
+                    data, size * 6, dataformat, datatype, cb, cbuser
+            });
         }
         return texture;
     }
@@ -184,6 +189,19 @@ bool isSrgbTextureFormat(TextureFormat format) {
         case Texture::InternalFormat::DXT1_RGBA:
         case Texture::InternalFormat::DXT3_RGBA:
         case Texture::InternalFormat::DXT5_RGBA:
+            return false;
+
+        // RGTC
+        case Texture::InternalFormat::RED_RGTC1:
+        case Texture::InternalFormat::SIGNED_RED_RGTC1:
+        case Texture::InternalFormat::RED_GREEN_RGTC2:
+        case Texture::InternalFormat::SIGNED_RED_GREEN_RGTC2:
+            return false;
+
+        // BPTC
+        case Texture::InternalFormat::RGB_BPTC_SIGNED_FLOAT:
+        case Texture::InternalFormat::RGB_BPTC_UNSIGNED_FLOAT:
+        case Texture::InternalFormat::RGBA_BPTC_UNORM:
             return false;
 
         default:

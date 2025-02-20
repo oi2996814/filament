@@ -20,11 +20,11 @@
 #include <filament/FilamentAPI.h>
 
 #include <backend/DriverEnums.h>
-
-#include <backend/PixelBufferDescriptor.h>
 #include <backend/CallbackHandler.h>
 
 #include <utils/compiler.h>
+
+#include <stdint.h>
 
 namespace filament {
 
@@ -92,10 +92,9 @@ public:
      * By default, Stream objects are ACQUIRED and must have external images pushed to them via
      * <pre>Stream::setAcquiredImage</pre>.
      *
-     * To create a NATIVE stream, call one of the <pre>stream</pre> methods
-     * on the builder.
+     * To create a NATIVE stream, call the <pre>stream</pre> method on the builder.
      */
-    class Builder : public BuilderBase<BuilderDetails> {
+    class Builder : public BuilderBase<BuilderDetails>, public BuilderNameMixin<Builder> {
         friend struct BuilderDetails;
     public:
         Builder() noexcept;
@@ -115,7 +114,7 @@ public:
          *
          * @return This Builder, for chaining calls.
          */
-        Builder& stream(void* stream) noexcept;
+        Builder& stream(void* UTILS_NULLABLE stream) noexcept;
 
         /**
          *
@@ -138,13 +137,28 @@ public:
         Builder& height(uint32_t height) noexcept;
 
         /**
+         * Associate an optional name with this Stream for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible. The name is
+         * truncated to a maximum of 128 characters.
+         *
+         * The name string is copied during this method so clients may free its memory after
+         * the function returns.
+         *
+         * @param name A string to identify this Stream
+         * @param len Length of name, should be less than or equal to 128
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
          * Creates the Stream object and returns a pointer to it.
          *
          * @param engine Reference to the filament::Engine to associate this Stream with.
          *
-         * @return pointer to the newly created object, or nullptr if the stream couldn't be created.
+         * @return pointer to the newly created object.
          */
-        Stream* build(Engine& engine);
+        Stream* UTILS_NONNULL build(Engine& engine);
 
     private:
         friend class FStream;
@@ -172,11 +186,12 @@ public:
      *
      * @param image      Pointer to AHardwareBuffer, casted to void* since this is a public header.
      * @param callback   This is triggered by Filament when it wishes to release the image.
-     *                   It callback tales two arguments: the AHardwareBuffer and the userdata.
+     *                   The callback tales two arguments: the AHardwareBuffer and the userdata.
      * @param userdata   Optional closure data. Filament will pass this into the callback when it
      *                   releases the image.
      */
-    void setAcquiredImage(void* image, Callback callback, void* userdata) noexcept;
+    void setAcquiredImage(void* UTILS_NONNULL image,
+            Callback UTILS_NONNULL callback, void* UTILS_NULLABLE userdata) noexcept;
 
     /**
      * @see setAcquiredImage(void*, Callback, void*)
@@ -188,7 +203,9 @@ public:
      * @param userdata   Optional closure data. Filament will pass this into the callback when it
      *                   releases the image.
      */
-    void setAcquiredImage(void* image, backend::CallbackHandler* handler, Callback callback, void* userdata) noexcept;
+    void setAcquiredImage(void* UTILS_NONNULL image,
+            backend::CallbackHandler* UTILS_NULLABLE handler,
+            Callback UTILS_NONNULL callback, void* UTILS_NULLABLE userdata) noexcept;
 
     /**
      * Updates the size of the incoming stream. Whether this value is used is
@@ -208,6 +225,10 @@ public:
      * @return timestamp in nanosecond.
      */
     int64_t getTimestamp() const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~Stream() = default;
 };
 
 } // namespace filament

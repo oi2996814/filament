@@ -17,26 +17,38 @@
 #ifndef TNT_GLSLPOSTPROCESSOR_H
 #define TNT_GLSLPOSTPROCESSOR_H
 
-#include <string>
-#include <vector>
-
-#include <backend/DriverEnums.h>
+#include <filamat/MaterialBuilder.h>    // for MaterialBuilder:: enums
 
 #include <private/filament/Variant.h>
-
-#include "filamat/MaterialBuilder.h"    // for MaterialBuilder:: enums
+#include <private/filament/SamplerInterfaceBlock.h>
 
 #include "ShaderMinifier.h"
 
-#include <ShaderLang.h>
-
 #include <spirv-tools/optimizer.hpp>
 
+#include <ShaderLang.h>
+
+#include <backend/DriverEnums.h>
+
+#include <utils/FixedCapacityVector.h>
+
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace filamat {
 
 using SpirvBlob = std::vector<uint32_t>;
+using BindingPointAndSib = std::pair<uint8_t, const filament::SamplerInterfaceBlock*>;
+using SibVector = utils::FixedCapacityVector<BindingPointAndSib>;
+
+using DescriptorInfo = std::tuple<
+        utils::CString,
+        filament::backend::DescriptorSetLayoutBinding,
+        std::optional<filament::SamplerInterfaceBlock::SamplerInfo>>;
+using DescriptorSetInfo = utils::FixedCapacityVector<DescriptorInfo>;
+using DescriptorSets = std::array<DescriptorSetInfo, filament::backend::MAX_DESCRIPTOR_SET_COUNT>;
 
 class GLSLPostProcessor {
 public:
@@ -51,12 +63,16 @@ public:
 
     struct Config {
         filament::Variant variant;
+        filament::UserVariantFilterMask variantFilter;
         MaterialBuilder::TargetApi targetApi;
-        filament::backend::ShaderType shaderType;
+        MaterialBuilder::TargetLanguage targetLanguage;
+        filament::backend::ShaderStage shaderType;
         filament::backend::ShaderModel shaderModel;
+        filament::backend::FeatureLevel featureLevel;
         filament::MaterialDomain domain;
         const filamat::MaterialInfo* materialInfo;
         bool hasFramebufferFetch;
+        bool usesClipDistance;
         struct {
             std::vector<std::pair<uint32_t, uint32_t>> subpassInputToColorLocation;
         } glsl;
@@ -67,18 +83,26 @@ public:
             SpirvBlob* outputSpirv,
             std::string* outputMsl);
 
+    // public so backend_test can also use it
+    static void spirvToMsl(const SpirvBlob* spirv, std::string* outMsl,
+            filament::backend::ShaderStage stage, filament::backend::ShaderModel shaderModel,
+            bool useFramebufferFetch, const DescriptorSets& descriptorSets,
+            const ShaderMinifier* minifier);
+
 private:
     struct InternalConfig {
         std::string* glslOutput = nullptr;
         SpirvBlob* spirvOutput = nullptr;
         std::string* mslOutput = nullptr;
         EShLanguage shLang = EShLangFragment;
-        int langVersion = 0;
+        // use 100 for ES environment, 110 for desktop
+         int langVersion = 0;
         ShaderMinifier minifier;
     };
 
-    void fullOptimization(const glslang::TShader& tShader,
+    bool fullOptimization(const glslang::TShader& tShader,
             GLSLPostProcessor::Config const& config, InternalConfig& internalConfig) const;
+
     void preprocessOptimization(glslang::TShader& tShader,
             GLSLPostProcessor::Config const& config, InternalConfig& internalConfig) const;
 
@@ -94,8 +118,8 @@ private:
     static void registerPerformancePasses(spvtools::Optimizer& optimizer, Config const& config);
 
     void optimizeSpirv(OptimizerPtr optimizer, SpirvBlob& spirv) const;
-    static void spirvToToMsl(const SpirvBlob* spirv, std::string* outMsl, const Config& config,
-            ShaderMinifier& minifier);
+
+    void fixupClipDistance(SpirvBlob& spirv, GLSLPostProcessor::Config const& config) const;
 
     const MaterialBuilder::Optimization mOptimization;
     const bool mPrintShaders;

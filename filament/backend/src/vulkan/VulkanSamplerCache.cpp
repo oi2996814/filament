@@ -15,6 +15,7 @@
  */
 
 #include "vulkan/VulkanSamplerCache.h"
+#include "vulkan/utils/Conversion.h"
 
 #include <utils/Panic.h>
 
@@ -87,8 +88,7 @@ constexpr inline float getMaxLod(SamplerMinFilter filter) noexcept {
         case SamplerMinFilter::LINEAR_MIPMAP_NEAREST:
         case SamplerMinFilter::NEAREST_MIPMAP_LINEAR:
         case SamplerMinFilter::LINEAR_MIPMAP_LINEAR:
-            // Assuming our maximum texture size is 4k, we'll never need more than 12 miplevels.
-            return 12.0f;
+            return VK_LOD_CLAMP_NONE;
     }
 }
 
@@ -96,10 +96,11 @@ constexpr inline VkBool32 getCompareEnable(SamplerCompareMode mode) noexcept {
     return mode == SamplerCompareMode::NONE ? VK_FALSE : VK_TRUE;
 }
 
-VulkanSamplerCache::VulkanSamplerCache(VulkanContext& context) : mContext(context) {}
+VulkanSamplerCache::VulkanSamplerCache(VkDevice device)
+    : mDevice(device) {}
 
 VkSampler VulkanSamplerCache::getSampler(SamplerParams params) noexcept {
-    auto iter = mCache.find(params.u);
+    auto iter = mCache.find(params);
     if (UTILS_LIKELY(iter != mCache.end())) {
         return iter->second;
     }
@@ -114,22 +115,23 @@ VkSampler VulkanSamplerCache::getSampler(SamplerParams params) noexcept {
         .anisotropyEnable = params.anisotropyLog2 == 0 ? 0u : 1u,
         .maxAnisotropy = (float)(1u << params.anisotropyLog2),
         .compareEnable = getCompareEnable(params.compareMode),
-        .compareOp = getCompareOp(params.compareFunc),
+        .compareOp = fvkutils::getCompareOp(params.compareFunc),
         .minLod = 0.0f,
         .maxLod = getMaxLod(params.filterMin),
         .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
         .unnormalizedCoordinates = VK_FALSE
     };
     VkSampler sampler;
-    VkResult error = vkCreateSampler(mContext.device, &samplerInfo, VKALLOC, &sampler);
-    ASSERT_POSTCONDITION(!error, "Unable to create sampler.");
-    mCache.insert({params.u, sampler});
+    VkResult result = vkCreateSampler(mDevice, &samplerInfo, VKALLOC, &sampler);
+    FILAMENT_CHECK_POSTCONDITION(result == VK_SUCCESS) << "Unable to create sampler."
+                                                       << " error=" << static_cast<int32_t>(result);
+    mCache.insert({params, sampler});
     return sampler;
 }
 
-void VulkanSamplerCache::reset() noexcept {
+void VulkanSamplerCache::terminate() noexcept {
     for (auto pair : mCache) {
-        vkDestroySampler(mContext.device, pair.second, VKALLOC);
+        vkDestroySampler(mDevice, pair.second, VKALLOC);
     }
     mCache.clear();
 }
