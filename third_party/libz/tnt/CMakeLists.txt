@@ -46,15 +46,24 @@ set(SRCS
     ${SRC_DIR}/zutil.c
 )
 
-if (NOT MSVC)
-    add_definitions(
-        -Wno-implicit-function-declaration
-        -Wno-shift-negative-value
-    )
-endif()
-
 # we're building a library
 add_library(${TARGET} STATIC ${PRIVATE_HDRS} ${PUBLIC_HDRS} ${SRCS})
 
+if (NOT MSVC)
+    set(TARGET_FLAGS
+            -Wno-implicit-function-declaration
+            -Wno-shift-negative-value
+    )
+
+    # -Wdeprecated-non-prototype is a new warning introduced in Clang 15.
+    # https://www.redhat.com/en/blog/new-warnings-and-errors-clang-15
+    if (CMAKE_C_COMPILER_ID MATCHES "Clang" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "15.0")
+        list(APPEND TARGET_FLAGS -Wno-deprecated-non-prototype) # See https://github.com/madler/zlib/issues/633
+    endif()
+
+    target_compile_options(${TARGET} PRIVATE ${TARGET_FLAGS})
+endif()
+
 # specify where the public headers of this library are
 target_include_directories (${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
+set_target_properties(${TARGET} PROPERTIES FOLDER ThirdParty)

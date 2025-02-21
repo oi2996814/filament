@@ -29,14 +29,21 @@
 #include "MetalExternalImage.h"
 #include "MetalState.h" // for MetalState::VertexDescription
 
+#include <backend/DriverEnums.h>
+#include <backend/platforms/PlatformMetal.h>
+
 #include <utils/bitset.h>
+#include <utils/CString.h>
 #include <utils/FixedCapacityVector.h>
 #include <utils/Panic.h>
+
+#include <math/vec2.h>
 
 #include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <type_traits>
+#include <vector>
 
 namespace filament {
 namespace backend {
@@ -45,13 +52,16 @@ class MetalSwapChain : public HwSwapChain {
 public:
 
     // Instantiate a SwapChain from a CAMetalLayer
-    MetalSwapChain(MetalContext& context, CAMetalLayer* nativeWindow, uint64_t flags);
+    MetalSwapChain(MetalContext& context, PlatformMetal& platform, CAMetalLayer* nativeWindow,
+            uint64_t flags);
 
     // Instantiate a SwapChain from a CVPixelBuffer
-    MetalSwapChain(MetalContext& context, CVPixelBufferRef pixelBuffer, uint64_t flags);
+    MetalSwapChain(MetalContext& context, PlatformMetal& platform, CVPixelBufferRef pixelBuffer,
+            uint64_t flags);
 
     // Instantiate a headless SwapChain.
-    MetalSwapChain(MetalContext& context, int32_t width, int32_t height, uint64_t flags);
+    MetalSwapChain(MetalContext& context, PlatformMetal& platform, int32_t width, int32_t height,
+            uint64_t flags);
 
     ~MetalSwapChain();
 
@@ -62,11 +72,14 @@ public:
     id<MTLTexture> acquireDrawable();
 
     id<MTLTexture> acquireDepthTexture();
+    id<MTLTexture> acquireStencilTexture();
 
     void releaseDrawable();
 
-    void setFrameScheduledCallback(FrameScheduledCallback callback, void* user);
-    void setFrameCompletedCallback(FrameCompletedCallback callback, void* user);
+    void setFrameScheduledCallback(
+            CallbackHandler* handler, FrameScheduledCallback&& callback, uint64_t flags);
+    void setFrameCompletedCallback(
+            CallbackHandler* handler, utils::Invocable<void(void)>&& callback);
 
     // For CAMetalLayer-backed SwapChains, presents the drawable or schedules a
     // FrameScheduledCallback.
@@ -74,6 +87,10 @@ public:
 
     NSUInteger getSurfaceWidth() const;
     NSUInteger getSurfaceHeight() const;
+
+    bool isPixelBuffer() const { return type == SwapChainType::CVPIXELBUFFERREF; }
+
+    bool isAbandoned() const;
 
 private:
 
@@ -84,53 +101,88 @@ private:
     };
     bool isCaMetalLayer() const { return type == SwapChainType::CAMETALLAYER; }
     bool isHeadless() const { return type == SwapChainType::HEADLESS; }
-    bool isPixelBuffer() const { return type == SwapChainType::CVPIXELBUFFERREF; }
 
     void scheduleFrameScheduledCallback();
     void scheduleFrameCompletedCallback();
 
+    static MTLPixelFormat decideDepthStencilFormat(uint64_t flags);
+    void ensureDepthStencilTexture();
+
     MetalContext& context;
+    PlatformMetal& platform;
     id<CAMetalDrawable> drawable = nil;
-    id<MTLTexture> depthTexture = nil;
+    id<MTLTexture> depthStencilTexture = nil;
     id<MTLTexture> headlessDrawable = nil;
-    NSUInteger headlessWidth;
-    NSUInteger headlessHeight;
+    MTLPixelFormat depthStencilFormat = MTLPixelFormatInvalid;
+    NSUInteger headlessWidth = 0;
+    NSUInteger headlessHeight = 0;
     CAMetalLayer* layer = nullptr;
+    std::shared_ptr<std::mutex> layerDrawableMutex;
     MetalExternalImage externalImage;
     SwapChainType type;
 
-    // These two fields store a callback and user data to notify the client that a frame is ready
-    // for presentation.
-    // If frameScheduledCallback is nullptr, then the Metal backend automatically calls
-    // presentDrawable when the frame is commited.
-    // Otherwise, the Metal backend will not automatically present the frame. Instead, clients bear
-    // the responsibility of presenting the frame by calling the PresentCallable object.
-    FrameScheduledCallback frameScheduledCallback = nullptr;
-    void* frameScheduledUserData = nullptr;
+    int64_t abandonedUntilFrame = -1;
 
-    FrameCompletedCallback frameCompletedCallback = nullptr;
-    void* frameCompletedUserData = nullptr;
+    // These fields store a callback to notify the client that a frame is ready for presentation. If
+    // !frameScheduled.callback, then the Metal backend automatically calls presentDrawable when the
+    // frame is committed. Otherwise, the Metal backend will not automatically present the frame.
+    // Instead, clients bear the responsibility of presenting the frame by calling the
+    // PresentCallable object.
+    struct {
+        CallbackHandler* handler = nullptr;
+        std::shared_ptr<FrameScheduledCallback> callback = nullptr;
+        uint64_t flags = 0;
+    } frameScheduled;
+
+    struct {
+        CallbackHandler* handler = nullptr;
+        std::shared_ptr<utils::Invocable<void(void)>> callback = nullptr;
+    } frameCompleted;
 };
 
 class MetalBufferObject : public HwBufferObject {
 public:
-    MetalBufferObject(MetalContext& context, BufferUsage usage, uint32_t byteCount);
 
-    void updateBuffer(void* data, size_t size, uint32_t byteOffset);
+    using TagResolver = MetalBuffer::TagResolver;
+
+    MetalBufferObject(MetalContext& context, BufferObjectBinding bindingType, BufferUsage usage,
+         uint32_t byteCount);
+
+    void updateBuffer(void* data, size_t size, uint32_t byteOffset, TagResolver&& getHandleTag);
+    void updateBufferUnsynchronized(
+            void* data, size_t size, uint32_t byteOffset, TagResolver&& getHandleTag);
     MetalBuffer* getBuffer() { return &buffer; }
-
-    // Tracks which uniform buffers this buffer object is bound into.
-    static_assert(Program::BINDING_COUNT <= 32);
-    utils::bitset32 boundUniformBuffers;
 
 private:
     MetalBuffer buffer;
 };
 
-struct MetalVertexBuffer : public HwVertexBuffer {
-    MetalVertexBuffer(MetalContext& context, uint8_t bufferCount, uint8_t attributeCount,
-            uint32_t vertexCount, AttributeArray const& attributes);
+struct MetalVertexBufferInfo : public HwVertexBufferInfo {
+    MetalVertexBufferInfo(MetalContext& context,
+            uint8_t bufferCount, uint8_t attributeCount, AttributeArray const& attributes);
 
+    // This struct is used to create the pipeline description to describe vertex assembly.
+    VertexDescription vertexDescription = {};
+
+    struct Entry {
+        uint8_t sourceBufferIndex = 0;
+        uint8_t stride = 0;
+        // maps to ->
+        uint8_t bufferArgumentIndex = 0;
+
+        Entry(uint8_t sourceBufferIndex, uint8_t stride, uint8_t bufferArgumentIndex)
+                : sourceBufferIndex(sourceBufferIndex),
+                  stride(stride),
+                  bufferArgumentIndex(bufferArgumentIndex) {}
+    };
+    utils::FixedCapacityVector<Entry> bufferMapping;
+};
+
+struct MetalVertexBuffer : public HwVertexBuffer {
+    MetalVertexBuffer(MetalContext& context,
+            uint32_t vertexCount, uint32_t bufferCount, Handle<HwVertexBufferInfo> vbih);
+
+    Handle<HwVertexBufferInfo> vbih;
     utils::FixedCapacityVector<MetalBuffer*> buffers;
 };
 
@@ -142,32 +194,29 @@ struct MetalIndexBuffer : public HwIndexBuffer {
 };
 
 struct MetalRenderPrimitive : public HwRenderPrimitive {
-    void setBuffers(MetalVertexBuffer* vertexBuffer, MetalIndexBuffer* indexBuffer);
+    MetalRenderPrimitive();
+    void setBuffers(MetalVertexBufferInfo const* const vbi,
+            MetalVertexBuffer* vertexBuffer, MetalIndexBuffer* indexBuffer);
     // The pointers to MetalVertexBuffer and MetalIndexBuffer are "weak".
     // The MetalVertexBuffer and MetalIndexBuffer must outlive the MetalRenderPrimitive.
 
     MetalVertexBuffer* vertexBuffer = nullptr;
     MetalIndexBuffer* indexBuffer = nullptr;
-
-    // This struct is used to create the pipeline description to describe vertex assembly.
-    VertexDescription vertexDescription = {};
 };
 
-struct MetalProgram : public HwProgram {
-    MetalProgram(id<MTLDevice> device, const Program& program) noexcept;
+class MetalProgram : public HwProgram {
+public:
+    MetalProgram(MetalContext& context, Program&& program) noexcept;
 
-    id<MTLFunction> vertexFunction;
-    id<MTLFunction> fragmentFunction;
+    const MetalShaderCompiler::MetalFunctionBundle& getFunctions();
+    const MetalShaderCompiler::MetalFunctionBundle& getFunctionsIfPresent() const;
 
-    struct SamplerBlockInfo {
-        uint8_t samplerGroup = UINT8_MAX;
-        uint8_t sampler = UINT8_MAX;
-    };
+private:
+    void initialize();
 
-    std::array<SamplerBlockInfo, MAX_VERTEX_SAMPLER_COUNT> vertexSamplerBlockInfo;
-    std::array<SamplerBlockInfo, MAX_FRAGMENT_SAMPLER_COUNT> fragmentSamplerBlockInfo;
-
-    bool isValid = false;
+    MetalContext& mContext;
+    MetalShaderCompiler::MetalFunctionBundle mFunctionBundle;
+    MetalShaderCompiler::program_token_t mToken;
 };
 
 struct PixelBufferShape {
@@ -183,52 +232,69 @@ struct PixelBufferShape {
             MTLSize size, uint32_t byteOffset);
 };
 
-struct MetalTexture : public HwTexture {
+class MetalTexture : public HwTexture {
+public:
     MetalTexture(MetalContext& context, SamplerType target, uint8_t levels, TextureFormat format,
-            uint8_t samples, uint32_t width, uint32_t height, uint32_t depth, TextureUsage usage,
-            TextureSwizzle r, TextureSwizzle g, TextureSwizzle b, TextureSwizzle a)
-            noexcept;
+            uint8_t samples, uint32_t width, uint32_t height, uint32_t depth,
+            TextureUsage usage) noexcept;
+
+    // constructors for creating texture views
+    MetalTexture(MetalContext& context, MetalTexture const* src, uint8_t baseLevel,
+            uint8_t levelCount) noexcept;
+    MetalTexture(MetalContext& context, MetalTexture const* src, TextureSwizzle r, TextureSwizzle g,
+            TextureSwizzle b, TextureSwizzle a) noexcept;
 
     // Constructor for importing an id<MTLTexture> outside of Filament.
     MetalTexture(MetalContext& context, SamplerType target, uint8_t levels, TextureFormat format,
             uint8_t samples, uint32_t width, uint32_t height, uint32_t depth, TextureUsage usage,
             id<MTLTexture> texture) noexcept;
 
-    ~MetalTexture();
+    // Constructors for importing external images.
+    MetalTexture(MetalContext& context, TextureFormat format, uint32_t width, uint32_t height,
+            TextureUsage usage, CVPixelBufferRef image) noexcept;
+    MetalTexture(MetalContext& context, TextureFormat format, uint32_t width, uint32_t height,
+            TextureUsage usage, CVPixelBufferRef image, uint32_t plane) noexcept;
+
+    // Returns an id<MTLTexture> suitable for reading in a shader, taking into account swizzle.
+    id<MTLTexture> getMtlTextureForRead() const noexcept;
+
+    // Returns the id<MTLTexture> for attaching to a render pass.
+    id<MTLTexture> getMtlTextureForWrite() const noexcept {
+        return texture;
+    }
+
+    std::shared_ptr<MetalExternalImage> getExternalImage() const noexcept { return externalImage; }
 
     void loadImage(uint32_t level, MTLRegion region, PixelBufferDescriptor& p) noexcept;
-    void loadCubeImage(const FaceOffsets& faceOffsets, int miplevel, PixelBufferDescriptor& p);
-    void loadSlice(uint32_t level, MTLRegion region, uint32_t byteOffset, uint32_t slice,
-            PixelBufferDescriptor& data) noexcept;
-    void loadWithCopyBuffer(uint32_t level, uint32_t slice, MTLRegion region, PixelBufferDescriptor& data,
-            const PixelBufferShape& shape);
-    void loadWithBlit(uint32_t level, uint32_t slice, MTLRegion region, PixelBufferDescriptor& data,
-            const PixelBufferShape& shape);
-    void updateLodRange(uint32_t level);
+    void generateMipmaps() noexcept;
 
     static MTLPixelFormat decidePixelFormat(MetalContext* context, TextureFormat format);
 
     MetalContext& context;
-    MetalExternalImage externalImage;
-    id<MTLTexture> texture = nil;
 
     // A "sidecar" texture used to implement automatic MSAA resolve.
     // This is created by MetalRenderTarget and stored here so it can be used with multiple
     // render targets.
     id<MTLTexture> msaaSidecar = nil;
 
+    MTLPixelFormat devicePixelFormat;
+
+private:
+    void loadSlice(uint32_t level, MTLRegion region, uint32_t byteOffset, uint32_t slice,
+            PixelBufferDescriptor const& data) noexcept;
+    void loadWithCopyBuffer(uint32_t level, uint32_t slice, MTLRegion region, PixelBufferDescriptor const& data,
+            const PixelBufferShape& shape);
+    void loadWithBlit(uint32_t level, uint32_t slice, MTLRegion region, PixelBufferDescriptor const& data,
+            const PixelBufferShape& shape);
+
+    id<MTLTexture> texture = nil;
+
+    std::shared_ptr<MetalExternalImage> externalImage;
+
     // If non-nil, a swizzled texture view to use instead of "texture".
     // Filament swizzling only affects texture reads, so this should not be used when the texture is
     // bound as a render target attachment.
     id<MTLTexture> swizzledTextureView = nil;
-
-    MTLPixelFormat devicePixelFormat;
-    uint32_t minLod = UINT_MAX;
-    uint32_t maxLod = 0;
-};
-
-struct MetalSamplerGroup : public HwSamplerGroup {
-    explicit MetalSamplerGroup(size_t size) : HwSamplerGroup(size) {}
 };
 
 class MetalRenderTarget : public HwRenderTarget {
@@ -242,7 +308,7 @@ public:
         Attachment() = default;
         Attachment(MetalTexture* metalTexture, uint8_t level = 0, uint16_t layer = 0) :
                 level(level), layer(layer),
-                texture(metalTexture->texture),
+                texture(metalTexture->getMtlTextureForWrite()),
                 metalTexture(metalTexture) { }
 
         id<MTLTexture> getTexture() const {
@@ -277,11 +343,42 @@ public:
     };
 
     MetalRenderTarget(MetalContext* context, uint32_t width, uint32_t height, uint8_t samples,
-            Attachment colorAttachments[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT], Attachment depthAttachment);
+            Attachment colorAttachments[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT],
+            Attachment depthAttachment, Attachment stencilAttachment);
     explicit MetalRenderTarget(MetalContext* context)
             : HwRenderTarget(0, 0), context(context), defaultRenderTarget(true) {}
 
     void setUpRenderPassAttachments(MTLRenderPassDescriptor* descriptor, const RenderPassParams& params);
+
+    bool involvesAbandonedSwapChain() const noexcept;
+
+    MTLViewport getViewportFromClientViewport(
+            Viewport rect, float depthRangeNear, float depthRangeFar) {
+        const int32_t height = int32_t(getAttachmentSize().y);
+        assert_invariant(height > 0);
+
+        // Metal's viewport coordinates have (0, 0) at the top-left, but Filament's have (0, 0) at
+        // bottom-left.
+        return {double(rect.left),
+                double(height - rect.bottom - int32_t(rect.height)),
+                double(rect.width), double(rect.height),
+                double(depthRangeNear), double(depthRangeFar)};
+    }
+
+    MTLRegion getRegionFromClientRect(Viewport rect) {
+        const uint32_t height = getAttachmentSize().y;
+        assert_invariant(height > 0);
+
+        // Convert the Filament rect into Metal texture coordinates, taking into account Metal's
+        // inverted texture space. Note that the underlying Texture could be larger than the
+        // RenderTarget. Metal's texture coordinates have (0, 0) at the top-left of the texture, but
+        // Filament's coordinates have (0, 0) at bottom-left.
+        return MTLRegionMake2D((NSUInteger)rect.left,
+                std::max(height - (int64_t) rect.bottom - rect.height, (int64_t) 0),
+                rect.width, rect.height);
+    }
+
+    math::uint2 getAttachmentSize() noexcept;
 
     bool isDefaultRenderTarget() const { return defaultRenderTarget; }
     uint8_t getSamples() const { return samples; }
@@ -289,13 +386,13 @@ public:
     Attachment getDrawColorAttachment(size_t index);
     Attachment getReadColorAttachment(size_t index);
     Attachment getDepthAttachment();
+    Attachment getStencilAttachment();
 
 private:
 
     static MTLLoadAction getLoadAction(const RenderPassParams& params, TargetBufferFlags buffer);
     static MTLStoreAction getStoreAction(const RenderPassParams& params, TargetBufferFlags buffer);
-    static id<MTLTexture> createMultisampledTexture(id<MTLDevice> device, MTLPixelFormat format,
-            uint32_t width, uint32_t height, uint8_t samples);
+    id<MTLTexture> createMultisampledTexture(MTLPixelFormat format, uint32_t width, uint32_t height, uint8_t samples) const;
 
     MetalContext* context;
     bool defaultRenderTarget = false;
@@ -303,12 +400,12 @@ private:
 
     Attachment color[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT] = {};
     Attachment depth = {};
+    Attachment stencil = {};
+    math::uint2 attachmentSize = {};
 };
 
 // MetalFence is used to implement both Fences and Syncs.
-// There's no diamond problem, because HwBase (superclass of HwFence and HwSync) is empty.
-static_assert(std::is_empty_v<HwBase>);
-class MetalFence : public HwFence, public HwSync {
+class MetalFence : public HwFence {
 public:
 
     // MetalFence is special, as it gets constructed on the Filament thread. We must delay inserting
@@ -350,10 +447,65 @@ struct MetalTimerQuery : public HwTimerQuery {
 
     struct Status {
         std::atomic<bool> available {false};
-        uint64_t elapsed {0};   // only valid if available is true
+        std::atomic<uint64_t> elapsed {0};   // only valid if available is true
     };
 
     std::shared_ptr<Status> status;
+};
+
+class MetalDescriptorSetLayout : public HwDescriptorSetLayout {
+public:
+    MetalDescriptorSetLayout(DescriptorSetLayout&& layout) noexcept;
+
+    const auto& getBindings() const noexcept { return mLayout.bindings; }
+
+    size_t getDynamicOffsetCount() const noexcept { return mDynamicOffsetCount; }
+
+    /**
+     * Get an argument encoder for this descriptor set and shader stage.
+     * textureTypes should only include the textures present in the corresponding shader stage.
+     */
+    id<MTLArgumentEncoder> getArgumentEncoder(id<MTLDevice> device, ShaderStage stage,
+            utils::FixedCapacityVector<MTLTextureType> const& textureTypes);
+
+private:
+    id<MTLArgumentEncoder> getArgumentEncoderSlow(id<MTLDevice> device, ShaderStage stage,
+            utils::FixedCapacityVector<MTLTextureType> const& textureTypes);
+
+    DescriptorSetLayout mLayout;
+    size_t mDynamicOffsetCount = 0;
+    std::array<id<MTLArgumentEncoder>, Program::SHADER_TYPE_COUNT> mCachedArgumentEncoder = { nil };
+    std::array<utils::FixedCapacityVector<MTLTextureType>, Program::SHADER_TYPE_COUNT>
+            mCachedTextureTypes;
+};
+
+struct MetalDescriptorSet : public HwDescriptorSet {
+    MetalDescriptorSet(MetalDescriptorSetLayout* layout) noexcept;
+
+    void finalize(MetalDriver* driver);
+
+    id<MTLBuffer> finalizeAndGetBuffer(MetalDriver* driver, ShaderStage stage);
+
+    MetalDescriptorSetLayout* layout;
+
+    struct BufferBinding {
+        id<MTLBuffer> buffer;
+        uint32_t offset;
+        uint32_t size;
+    };
+    struct TextureBinding {
+        id<MTLTexture> texture;
+        SamplerParams sampler;
+    };
+    tsl::robin_map<descriptor_binding_t, BufferBinding> buffers;
+    tsl::robin_map<descriptor_binding_t, TextureBinding> textures;
+
+    std::vector<id<MTLResource>> vertexResources;
+    std::vector<id<MTLResource>> fragmentResources;
+
+    std::vector<std::shared_ptr<MetalExternalImage>> externalImages;
+
+    std::array<TrackedMetalBuffer, Program::SHADER_TYPE_COUNT> cachedBuffer = { nil };
 };
 
 } // namespace backend

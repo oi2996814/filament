@@ -16,57 +16,62 @@
 
 #include "FrameSkipper.h"
 
-#include "details/Engine.h"
+#include <backend/DriverEnums.h>
 
-#include <utils/Log.h>
+#include <utils/compiler.h>
 #include <utils/debug.h>
+
+#include <algorithm>
+
+#include <stddef.h>
 
 namespace filament {
 
 using namespace utils;
 using namespace backend;
 
-FrameSkipper::FrameSkipper(size_t latency) noexcept
-        : mLast(latency) {
-    assert_invariant(latency <= MAX_FRAME_LATENCY);
+FrameSkipper::FrameSkipper(size_t const latency) noexcept
+        : mLast(std::clamp(latency, size_t(1), MAX_FRAME_LATENCY) - 1) {
 }
 
 FrameSkipper::~FrameSkipper() noexcept = default;
 
 void FrameSkipper::terminate(DriverApi& driver) noexcept {
-    for (auto sync : mDelayedSyncs) {
-        if (sync) {
-            driver.destroySync(sync);
+    for (auto fence : mDelayedFences) {
+        if (fence) {
+            driver.destroyFence(fence);
         }
     }
 }
 
 bool FrameSkipper::beginFrame(DriverApi& driver) noexcept {
-    auto& syncs = mDelayedSyncs;
-    auto sync = syncs.front();
-    if (sync) {
-        auto status = driver.getSyncStatus(sync);
-        if (status == SyncStatus::NOT_SIGNALED) {
-            // Sync not ready, skip frame
+    auto& fences = mDelayedFences;
+    if (fences.front()) {
+        // Do we have a latency old fence?
+        auto status = driver.getFenceStatus(fences.front());
+        if (UTILS_UNLIKELY(status == FenceStatus::TIMEOUT_EXPIRED)) {
+            // The fence hasn't signaled yet, skip this frame
             return false;
         }
-        driver.destroySync(sync);
+        assert_invariant(status == FenceStatus::CONDITION_SATISFIED);
     }
-    // shift all fences down by 1
-    std::move(syncs.begin() + 1, syncs.end(), syncs.begin());
-    syncs.back() = {};
     return true;
 }
 
 void FrameSkipper::endFrame(DriverApi& driver) noexcept {
-    // if the user produced a new frame despite the fact that the previous one wasn't finished
-    // (i.e. FrameSkipper::beginFrame() returned false), we need to make sure to replace
-    // a fence that might be here already)
-    auto& sync = mDelayedSyncs[mLast];
-    if (sync) {
-        driver.destroySync(sync);
+    auto& fences = mDelayedFences;
+    size_t const last = mLast;
+
+    // pop the oldest fence and advance the other ones
+    if (fences.front()) {
+        driver.destroyFence(fences.front());
     }
-    sync = driver.createSync();
+    std::move(fences.begin() + 1, fences.end(), fences.begin());
+
+    // add a new fence to the end
+    assert_invariant(!fences[last]);
+
+    fences[last] = driver.createFence();
 }
 
 } // namespace filament

@@ -22,43 +22,43 @@ namespace filament {
 
 using namespace math;
 
-void IndirectLight::setIntensity(float intensity) noexcept {
-    upcast(this)->setIntensity(intensity);
+void IndirectLight::setIntensity(float const intensity) noexcept {
+    downcast(this)->setIntensity(intensity);
 }
 
 float IndirectLight::getIntensity() const noexcept {
-    return upcast(this)->getIntensity();
+    return downcast(this)->getIntensity();
 }
 
 void IndirectLight::setRotation(mat3f const& rotation) noexcept {
-    upcast(this)->setRotation(rotation);
+    downcast(this)->setRotation(rotation);
 }
 
 const mat3f& IndirectLight::getRotation() const noexcept {
-    return upcast(this)->getRotation();
+    return downcast(this)->getRotation();
 }
 
 Texture const* IndirectLight::getReflectionsTexture() const noexcept {
-    return upcast(this)->getReflectionsTexture();
+    return downcast(this)->getReflectionsTexture();
 }
 
 Texture const* IndirectLight::getIrradianceTexture() const noexcept {
-    return upcast(this)->getIrradianceTexture();
+    return downcast(this)->getIrradianceTexture();
 }
 
 float3 IndirectLight::getDirectionEstimate() const noexcept {
-    return upcast(this)->getDirectionEstimate();
+    return downcast(this)->getDirectionEstimate();
 }
 
-float4 IndirectLight::getColorEstimate(float3 direction) const noexcept {
-    return upcast(this)->getColorEstimate(direction);
+float4 IndirectLight::getColorEstimate(float3 const direction) const noexcept {
+    return downcast(this)->getColorEstimate(direction);
 }
 
 float3 IndirectLight::getDirectionEstimate(const float3* sh) noexcept {
     return FIndirectLight::getDirectionEstimate(sh);
 }
 
-float4 IndirectLight::getColorEstimate(const float3* sh, float3 direction) noexcept {
+float4 IndirectLight::getColorEstimate(const float3* sh, float3 const direction) noexcept {
     return FIndirectLight::getColorEstimate(sh, direction);
 }
 

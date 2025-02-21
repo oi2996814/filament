@@ -17,7 +17,10 @@
 #ifndef TNT_FILAMENT_BACKEND_VULKANBLITTER_H
 #define TNT_FILAMENT_BACKEND_VULKANBLITTER_H
 
+#include "VulkanCommands.h"
 #include "VulkanContext.h"
+
+#include <utils/compiler.h>
 
 namespace filament::backend {
 
@@ -30,46 +33,19 @@ struct VulkanProgram;
 
 class VulkanBlitter {
 public:
-    VulkanBlitter(VulkanContext& context, VulkanStagePool& stagePool,
-            VulkanPipelineCache& pipelineCache, VulkanFboCache& fboCache,
-            VulkanSamplerCache& samplerCache) :
-            mContext(context), mStagePool(stagePool), mPipelineCache(pipelineCache),
-            mFramebufferCache(fboCache), mSamplerCache(samplerCache) {}
+    VulkanBlitter(VkPhysicalDevice physicalDevice, VulkanCommands* commands) noexcept;
 
-    struct BlitArgs {
-        const VulkanRenderTarget* dstTarget;
-        const VkOffset3D* dstRectPair;
-        const VulkanRenderTarget* srcTarget;
-        const VkOffset3D* srcRectPair;
-        VkFilter filter = VK_FILTER_NEAREST;
-        int targetIndex = 0;
-    };
+    void blit(VkFilter filter,
+            VulkanAttachment dst, const VkOffset3D* dstRectPair,
+            VulkanAttachment src, const VkOffset3D* srcRectPair);
 
-    void blitColor(BlitArgs args);
-    void blitDepth(BlitArgs args);
+    void resolve(VulkanAttachment dst, VulkanAttachment src);
 
-    void shutdown() noexcept;
+    void terminate() noexcept;
 
 private:
-    void lazyInit() noexcept;
-
-    void blitFast(VkImageAspectFlags aspect, VkFilter filter, const VkExtent2D srcExtent,
-            VulkanAttachment src, VulkanAttachment dst, const VkOffset3D srcRect[2],
-            const VkOffset3D dstRect[2]);
-
-    void blitSlowDepth(VkImageAspectFlags aspect, VkFilter filter,
-            const VkExtent2D srcExtent, VulkanAttachment src, VulkanAttachment dst,
-            const VkOffset3D srcRect[2], const VkOffset3D dstRect[2]);
-
-    VulkanBuffer* mTriangleBuffer = nullptr;
-    VulkanBuffer* mParamsBuffer = nullptr;
-    VulkanProgram* mDepthResolveProgram = nullptr;
-
-    VulkanContext& mContext;
-    VulkanStagePool& mStagePool;
-    VulkanPipelineCache& mPipelineCache;
-    VulkanFboCache& mFramebufferCache;
-    VulkanSamplerCache& mSamplerCache;
+    UTILS_UNUSED VkPhysicalDevice mPhysicalDevice;
+    VulkanCommands* mCommands;
 };
 
 } // namespace filament::backend

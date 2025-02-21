@@ -16,12 +16,14 @@ package com.google.android.filament;
  * <li>Configurable tone mapping operators</li>
  * <ul>
  *   <li>GenericToneMapper</li>
+ *   <li>AgXToneMapper</li>
  * </ul>
  * <li>Fixed-aesthetic tone mapping operators</li>
  * <ul>
  *   <li>ACESToneMapper</li>
  *   <li>ACESLegacyToneMapper</li>
  *   <li>FilmicToneMapper</li>
+ *   <li>PBRNeutralToneMapper</li>
  * </ul>
  * <li>Debug/validation tone mapping operators</li>
  * <ul>
@@ -97,6 +99,55 @@ public class ToneMapper {
     public static class Filmic extends ToneMapper {
         public Filmic() {
             super(nCreateFilmicToneMapper());
+        }
+    }
+
+    /**
+     * Khronos PBR Neutral tone mapping operator. This tone mapper was designed
+     * to preserve the appearance of materials across lighting conditions while
+     * avoiding artifacts in the highlights in high dynamic range conditions.
+     */
+    public static class PBRNeutralToneMapper extends ToneMapper {
+        public PBRNeutralToneMapper() {
+            super(nCreatePBRNeutralToneMapper());
+        }
+    }
+
+    /**
+     * AgX tone mapping operator.
+     */
+    public static class Agx extends ToneMapper {
+        public enum AgxLook {
+            /**
+             * Base contrast with no look applied
+             */
+            NONE,
+
+            /**
+             * A punchy and more chroma laden look for sRGB displays
+             */
+            PUNCHY,
+
+            /**
+             * A golden tinted, slightly washed look for BT.1886 displays
+             */
+            GOLDEN
+        }
+
+        /**
+         * Builds a new AgX tone mapper with no look applied.
+         */
+        public Agx() {
+            this(AgxLook.NONE);
+        }
+
+        /**
+         * Builds a new AgX tone mapper.
+         *
+         * @param look: an optional creative adjustment to contrast and saturation
+         */
+        public Agx(AgxLook look) {
+            super(nCreateAgxToneMapper(look.ordinal()));
         }
     }
 
@@ -194,6 +245,8 @@ public class ToneMapper {
     private static native long nCreateACESToneMapper();
     private static native long nCreateACESLegacyToneMapper();
     private static native long nCreateFilmicToneMapper();
+    private static native long nCreatePBRNeutralToneMapper();
+    private static native long nCreateAgxToneMapper(int look);
     private static native long nCreateGenericToneMapper(
             float contrast, float midGrayIn, float midGrayOut, float hdrMax);
 

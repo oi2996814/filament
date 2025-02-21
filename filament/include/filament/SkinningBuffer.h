@@ -26,19 +26,20 @@
 #include <math/mathfwd.h>
 
 #include <stddef.h>
-
+#include <stdint.h>
 
 namespace filament {
 
 /**
  * SkinningBuffer is used to hold skinning data (bones). It is a simple wraper around
  * a structured UBO.
+ * @see RenderableManager::setSkinningBuffer
  */
 class UTILS_PUBLIC SkinningBuffer : public FilamentAPI {
     struct BuilderDetails;
 
 public:
-    class Builder : public BuilderBase<BuilderDetails> {
+    class Builder : public BuilderBase<BuilderDetails>, public BuilderNameMixin<Builder> {
         friend struct BuilderDetails;
     public:
         Builder() noexcept;
@@ -69,12 +70,26 @@ public:
         Builder& initialize(bool initialize = true) noexcept;
 
         /**
+         * Associate an optional name with this SkinningBuffer for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible. The name is
+         * truncated to a maximum of 128 characters.
+         *
+         * The name string is copied during this method so clients may free its memory after
+         * the function returns.
+         *
+         * @param name A string to identify this SkinningBuffer
+         * @param len Length of name, should be less than or equal to 128
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
          * Creates the SkinningBuffer object and returns a pointer to it.
          *
          * @param engine Reference to the filament::Engine to associate this SkinningBuffer with.
          *
-         * @return pointer to the newly created object or nullptr if exceptions are disabled and
-         *         an error occurred.
+         * @return pointer to the newly created object.
          *
          * @exception utils::PostConditionPanic if a runtime error occurred, such as running out of
          *            memory or other resources.
@@ -82,7 +97,7 @@ public:
          *
          * @see SkinningBuffer::setBones
          */
-        SkinningBuffer* build(Engine& engine);
+        SkinningBuffer* UTILS_NONNULL build(Engine& engine);
     private:
         friend class FSkinningBuffer;
     };
@@ -93,8 +108,9 @@ public:
      * @param transforms pointer to at least count Bone
      * @param count number of Bone elements in transforms
      * @param offset offset in elements (not bytes) in the SkinningBuffer (not in transforms)
+     * @see RenderableManager::setSkinningBuffer
      */
-    void setBones(Engine& engine, RenderableManager::Bone const* transforms,
+    void setBones(Engine& engine, RenderableManager::Bone const* UTILS_NONNULL transforms,
             size_t count, size_t offset = 0);
 
     /**
@@ -103,8 +119,9 @@ public:
      * @param transforms pointer to at least count mat4f
      * @param count number of mat4f elements in transforms
      * @param offset offset in elements (not bytes) in the SkinningBuffer (not in transforms)
+     * @see RenderableManager::setSkinningBuffer
      */
-    void setBones(Engine& engine, math::mat4f const* transforms,
+    void setBones(Engine& engine, math::mat4f const* UTILS_NONNULL transforms,
             size_t count, size_t offset = 0);
 
     /**
@@ -112,6 +129,10 @@ public:
      * @return The number of bones the SkinningBuffer holds.
      */
     size_t getBoneCount() const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~SkinningBuffer() = default;
 };
 
 } // namespace filament

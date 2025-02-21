@@ -14,21 +14,32 @@
  * limitations under the License.
  */
 
-#include "private/backend/Driver.h"
+#include "DriverBase.h"
 
-#include "private/backend/AcquiredImage.h"
+#include "private/backend/Driver.h"
 #include "private/backend/CommandStream.h"
 
-#include "DriverBase.h"
+#include <backend/AcquiredImage.h>
+#include <backend/BufferDescriptor.h>
+#include <backend/DriverEnums.h>
+
+#include <utils/compiler.h>
+#include <utils/debug.h>
+#include <utils/Log.h>
+#include <utils/ostream.h>
+#include <utils/Systrace.h>
 
 #include <math/half.h>
 #include <math/vec2.h>
 #include <math/vec3.h>
 #include <math/vec4.h>
 
-#include <backend/BufferDescriptor.h>
+#include <functional>
+#include <mutex>
+#include <utility>
 
-#include <utils/Systrace.h>
+#include <stddef.h>
+#include <stdint.h>
 
 using namespace utils;
 using namespace filament::math;
@@ -64,6 +75,8 @@ DriverBase::DriverBase() noexcept {
 }
 
 DriverBase::~DriverBase() noexcept {
+    assert_invariant(mCallbacks.empty());
+    assert_invariant(mServiceThreadCallbackQueue.empty());
     if constexpr (UTILS_HAS_THREADING) {
         // quit our service thread
         std::unique_lock<std::mutex> lock(mServiceThreadLock);
@@ -96,11 +109,11 @@ void DriverBase::CallbackData::release(CallbackData* data) {
 
 void DriverBase::scheduleCallback(CallbackHandler* handler, void* user, CallbackHandler::Callback callback) {
     if (handler && UTILS_HAS_THREADING) {
-        std::lock_guard<std::mutex> lock(mServiceThreadLock);
+        std::lock_guard<std::mutex> const lock(mServiceThreadLock);
         mServiceThreadCallbackQueue.emplace_back(handler, callback, user);
         mServiceThreadCondition.notify_one();
     } else {
-        std::lock_guard<std::mutex> lock(mPurgeLock);
+        std::lock_guard<std::mutex> const lock(mPurgeLock);
         mCallbacks.emplace_back(user, callback);
     }
 }
@@ -118,7 +131,8 @@ void DriverBase::purge() noexcept {
 // ------------------------------------------------------------------------------------------------
 
 void DriverBase::scheduleDestroySlow(BufferDescriptor&& buffer) noexcept {
-    scheduleCallback(buffer.getHandler(), [buffer = std::move(buffer)]() {
+    auto const handler = buffer.getHandler();
+    scheduleCallback(handler, [buffer = std::move(buffer)]() {
         // user callback is called when BufferDescriptor gets destroyed
     });
 }
@@ -200,7 +214,7 @@ size_t Driver::getElementTypeSize(ElementType type) noexcept {
 
 Driver::~Driver() noexcept = default;
 
-void Driver::execute(std::function<void(void)> const& fn) noexcept {
+void Driver::execute(std::function<void(void)> const& fn) {
     fn();
 }
 

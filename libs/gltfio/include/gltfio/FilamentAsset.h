@@ -20,6 +20,8 @@
 #include <filament/Box.h>
 #include <filament/TextureSampler.h>
 
+#include <gltfio/NodeManager.h>
+
 #include <utils/compiler.h>
 #include <utils/Entity.h>
 
@@ -27,9 +29,10 @@ namespace filament {
     class Camera;
     class Engine;
     class MaterialInstance;
+    class Scene;
 }
 
-namespace gltfio {
+namespace filament::gltfio {
 
 class Animator;
 class FilamentInstance;
@@ -42,10 +45,10 @@ class FilamentInstance;
  *
  * This class owns a hierarchy of entities that have been loaded from a glTF asset. Every entity has
  * a filament::TransformManager component, and some entities also have \c Name, \c Renderable,
- * \c Light, or \c Camera components.
+ * \c Light, \c Camera, or \c Node components.
  *
  * In addition to the aforementioned entities, an asset has strong ownership over a list of
- * filament::VertexBuffer, filament::IndexBuffer, filament::MaterialInstance, filament::Texture,
+ * filament::VertexBuffer, filament::IndexBuffer, filament::Texture,
  * and, optionally, a simple animation engine (gltfio::Animator).
  *
  * Clients must use ResourceLoader to create filament::Texture objects, compute tangent quaternions,
@@ -55,12 +58,14 @@ class FilamentInstance;
  */
 class UTILS_PUBLIC FilamentAsset {
 public:
+    using Entity = utils::Entity;
+    using SceneMask = NodeManager::SceneMask;
 
     /**
      * Gets the list of entities, one for each glTF node. All of these have a Transform component.
      * Some of the returned entities may also have a Renderable component and/or a Light component.
      */
-    const utils::Entity* getEntities() const noexcept;
+    const Entity* getEntities() const noexcept;
 
     /**
      * Gets the number of entities returned by getEntities().
@@ -70,7 +75,7 @@ public:
     /**
      * Gets the list of entities in the scene representing lights. All of these have a Light component.
      */
-    const utils::Entity* getLightEntities() const noexcept;
+    const Entity* getLightEntities() const noexcept;
 
     /**
      * Gets the number of entities returned by getLightEntities().
@@ -105,7 +110,7 @@ public:
      *
      * @see filament::Camera::setScaling
      */
-    const utils::Entity* getCameraEntities() const noexcept;
+    const Entity* getCameraEntities() const noexcept;
 
     /**
      * Gets the number of entities returned by getCameraEntities().
@@ -119,7 +124,7 @@ public:
      * assets, this is a "super root" where each of its children is a root in a particular instance.
      * This allows users to transform all instances en masse if they wish to do so.
      */
-    utils::Entity getRoot() const noexcept;
+    Entity getRoot() const noexcept;
 
     /**
      * Pops a ready renderable off the queue, or returns 0 if no renderables have become ready.
@@ -132,12 +137,14 @@ public:
      * textures gradually become ready through asynchronous loading. For example, on every frame
      * progressive applications can do something like this:
      *
-     *    while (utils::Entity e = popRenderable()) { scene.addEntity(e); }
+     *    while (Entity e = popRenderable()) { scene.addEntity(e); }
+     *
+     * Progressive reveal is not supported for dynamically added instances.
      *
      * \see ResourceLoader#asyncBeginLoad
      * \see popRenderables()
      */
-    utils::Entity popRenderable() noexcept;
+    Entity popRenderable() noexcept;
 
     /**
      * Pops up to "count" ready renderables off the queue, or returns the available number.
@@ -148,16 +155,7 @@ public:
      *
      * \see ResourceLoader#asyncBeginLoad
      */
-    size_t popRenderables(utils::Entity* entities, size_t count) noexcept;
-
-    /** Gets all material instances. These are already bound to renderables. */
-    const filament::MaterialInstance* const* getMaterialInstances() const noexcept;
-
-    /** Gets all material instances (non-const). These are already bound to renderables. */
-    filament::MaterialInstance* const* getMaterialInstances() noexcept;
-
-    /** Gets the number of materials returned by getMaterialInstances(). */
-    size_t getMaterialInstanceCount() const noexcept;
+    size_t popRenderables(Entity* entities, size_t count) noexcept;
 
     /** Gets resource URIs for all externally-referenced buffers. */
     const char* const* getResourceUris() const noexcept;
@@ -165,14 +163,19 @@ public:
     /** Gets the number of resource URIs returned by getResourceUris(). */
     size_t getResourceUriCount() const noexcept;
 
-    /** Gets the bounding box computed from the supplied min / max values in glTF accessors. */
+    /**
+     * Gets the bounding box computed from the supplied min / max values in glTF accessors.
+     *
+     * This does not return a bounding box over all FilamentInstance, it's just a straightforward
+     * AAAB that can be determined at load time from the asset data.
+     */
     filament::Aabb getBoundingBox() const noexcept;
 
     /** Gets the NameComponentManager label for the given entity, if it exists. */
-    const char* getName(utils::Entity) const noexcept;
+    const char* getName(Entity) const noexcept;
 
     /** Returns the first entity with the given name, or 0 if none exist. */
-    utils::Entity getFirstEntityByName(const char* name) noexcept;
+    Entity getFirstEntityByName(const char* name) noexcept;
 
     /**
      * Gets a list of entities with the given name.
@@ -184,7 +187,7 @@ public:
      * @return If entities is non-null, the number of entities written to the entity pointer.
      * Otherwise this returns the number of entities with the given name.
      */
-    size_t getEntitiesByName(const char* name, utils::Entity* entities,
+    size_t getEntitiesByName(const char* name, Entity* entities,
             size_t maxCount) const noexcept;
 
     /**
@@ -197,81 +200,27 @@ public:
      * @return If entities is non-null, the number of entities written to the entity pointer.
      * Otherwise this returns the number of entities with the given prefix.
      */
-    size_t getEntitiesByPrefix(const char* prefix, utils::Entity* entities,
+    size_t getEntitiesByPrefix(const char* prefix, Entity* entities,
             size_t maxCount) const noexcept;
 
     /** Gets the glTF extras string for a specific node, or for the asset, if it exists. */
-    const char* getExtras(utils::Entity entity = {}) const noexcept;
-
-    /**
-     * Returns the animation engine.
-     *
-     * The animator is owned by the asset and should not be manually deleted.
-     * Must be called after loadResources or asyncBeginLoad, otherwise returns null.
-     * If the asset is instanced, this returns a "primary" animator that controls all instances.
-     * To animate each instance individually, use \see FilamentInstance.
-     */
-    Animator* getAnimator() const noexcept;
-
-    /**
-     * Gets the number of skins.
-     */
-    size_t getSkinCount() const noexcept;
-
-    /**
-     * Gets the skin name at skin index.
-     */
-    const char* getSkinNameAt(size_t skinIndex) const noexcept;
-
-    /**
-     * Gets the number of joints at skin index.
-     */
-    size_t getJointCountAt(size_t skinIndex) const noexcept;
-
-    /**
-     * Gets joints at skin index.
-     */
-    const utils::Entity* getJointsAt(size_t skinIndex) const noexcept;
+    const char* getExtras(Entity entity = {}) const noexcept;
 
     /**
      * Gets the morph target name at the given index in the given entity.
      */
-    const char* getMorphTargetNameAt(utils::Entity entity, size_t targetIndex) const noexcept;
+    const char* getMorphTargetNameAt(Entity entity, size_t targetIndex) const noexcept;
 
     /**
      * Returns the number of morph targets in the given entity.
      */
-    size_t getMorphTargetCountAt(utils::Entity entity) const noexcept;
-
-    /**
-     * Returns the number of material variants in the asset.
-     */
-    size_t getMaterialVariantCount() const noexcept;
-
-    /**
-     * Returns the name of the given material variant, or null if it is out of bounds.
-     */
-    const char* getMaterialVariantName(size_t variantIndex) const noexcept;
-
-    /**
-     * Applies the given material variant to all primitives that it affects.
-     *
-     * This is efficient because it merely swaps around persistent MaterialInstances. If you change
-     * a material parameter while a certain variant is active, the updated value will be remembered
-     * after you re-apply that variant.
-     *
-     * If the asset is instanced, this affects all instances in the same way.
-     * To set the variant on an individual instance, use FilamentInstance::applyMaterialVariant.
-     *
-     * Ignored if variantIndex is out of bounds.
-     */
-    void applyMaterialVariant(size_t variantIndex) noexcept;
+    size_t getMorphTargetCountAt(Entity entity) const noexcept;
 
     /**
      * Lazily creates a single LINES renderable that draws the transformed bounding-box hierarchy
      * for diagnostic purposes. The wireframe is owned by the asset so clients should not delete it.
      */
-    utils::Entity getWireframe() noexcept;
+    Entity getWireframe() noexcept;
 
     /**
      * Returns the Filament engine associated with the AssetLoader that created this asset.
@@ -292,6 +241,46 @@ public:
      */
     const void* getSourceAsset() noexcept;
 
+    /**
+     * Returns the number of scenes in the asset.
+     */
+    size_t getSceneCount() const noexcept;
+
+    /**
+     * Returns the name of the given scene.
+     *
+     * Returns null if the given scene does not have a name or is out of bounds.
+     */
+    const char* getSceneName(size_t sceneIndex) const noexcept;
+
+    /**
+     * Adds entities to a Filament scene only if they belong to at least one of the given glTF
+     * scenes.
+     *
+     * This is just a helper that provides an alternative to directly calling scene->addEntities()
+     * and provides filtering functionality.
+     */
+    void addEntitiesToScene(filament::Scene& targetScene, const Entity* entities, size_t count,
+            SceneMask sceneFilter) const;
+
+    /**
+     * Releases ownership of entities and their Filament components.
+     *
+     * This makes the client take responsibility for destroying Filament
+     * components (e.g. Renderable, TransformManager component) as well as
+     * the underlying entities.
+     */
+    void detachFilamentComponents() noexcept;
+
+    bool areFilamentComponentsDetached() const noexcept;
+
+    /**
+     * Convenience function to get the first instance, or null if it doesn't exist.
+     */
+    FilamentInstance* getInstance() noexcept {
+        return getAssetInstanceCount() > 0 ? getAssetInstances()[0] : nullptr;
+    }
+
     /*! \cond PRIVATE */
 
     FilamentInstance** getAssetInstances() noexcept;
@@ -309,6 +298,6 @@ public:
     /*! \endcond */
 };
 
-} // namespace gltfio
+} // namespace filament::gltfio
 
 #endif // GLTFIO_FILAMENTASSET_H

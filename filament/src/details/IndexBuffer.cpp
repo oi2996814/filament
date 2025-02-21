@@ -20,6 +20,8 @@
 
 #include "FilamentAPI-impl.h"
 
+#include <utils/CString.h>
+
 namespace filament {
 
 struct IndexBuffer::BuilderDetails {
@@ -30,34 +32,46 @@ struct IndexBuffer::BuilderDetails {
 using BuilderType = IndexBuffer;
 BuilderType::Builder::Builder() noexcept = default;
 BuilderType::Builder::~Builder() noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder&& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder const& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder&& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder const& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder&& rhs) noexcept = default;
 
-IndexBuffer::Builder& IndexBuffer::Builder::indexCount(uint32_t indexCount) noexcept {
+IndexBuffer::Builder& IndexBuffer::Builder::indexCount(uint32_t const indexCount) noexcept {
     mImpl->mIndexCount = indexCount;
     return *this;
 }
 
-IndexBuffer::Builder& IndexBuffer::Builder::bufferType(IndexType indexType) noexcept {
+IndexBuffer::Builder& IndexBuffer::Builder::bufferType(IndexType const indexType) noexcept {
     mImpl->mIndexType = indexType;
     return *this;
 }
 
+IndexBuffer::Builder& IndexBuffer::Builder::name(const char* name, size_t const len) noexcept {
+    return BuilderNameMixin::name(name, len);
+}
+
 IndexBuffer* IndexBuffer::Builder::build(Engine& engine) {
-    return upcast(engine).createIndexBuffer(*this);
+    return downcast(engine).createIndexBuffer(*this);
 }
 
 // ------------------------------------------------------------------------------------------------
 
-FIndexBuffer::FIndexBuffer(FEngine& engine, const IndexBuffer::Builder& builder)
+FIndexBuffer::FIndexBuffer(FEngine& engine, const Builder& builder)
         : mIndexCount(builder->mIndexCount) {
+    auto& name = builder.getName();
+    const char* const tag = name.empty() ? "(no tag)" : name.c_str_safe();
+    FILAMENT_CHECK_PRECONDITION(
+            builder->mIndexType == IndexType::UINT || builder->mIndexType == IndexType::USHORT)
+            << "Invalid index type " << static_cast<int>(builder->mIndexType) << ", tag=" << tag;
     FEngine::DriverApi& driver = engine.getDriverApi();
     mHandle = driver.createIndexBuffer(
             (backend::ElementType)builder->mIndexType,
             uint32_t(builder->mIndexCount),
             backend::BufferUsage::STATIC);
+    if (auto name = builder.getName(); !name.empty()) {
+        driver.setDebugTag(mHandle.getId(), std::move(name));
+    }
 }
 
 void FIndexBuffer::terminate(FEngine& engine) {
@@ -65,7 +79,7 @@ void FIndexBuffer::terminate(FEngine& engine) {
     driver.destroyIndexBuffer(mHandle);
 }
 
-void FIndexBuffer::setBuffer(FEngine& engine, BufferDescriptor&& buffer, uint32_t byteOffset) {
+void FIndexBuffer::setBuffer(FEngine& engine, BufferDescriptor&& buffer, uint32_t const byteOffset) {
     engine.getDriverApi().updateIndexBuffer(mHandle, std::move(buffer), byteOffset);
 }
 

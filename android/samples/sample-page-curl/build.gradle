@@ -6,6 +6,10 @@ plugins {
 
 project.ext.isSample = true
 
+kotlin {
+    jvmToolchain(versions.jdk)
+}
+
 filamentTools {
     iblInputFile = project.layout.projectDirectory.file("../../../third_party/environments/studio_small_02_2k.hdr")
     iblOutputDir = project.layout.projectDirectory.dir("src/main/assets/envs")
@@ -18,6 +22,8 @@ clean.doFirst {
 }
 
 android {
+    namespace 'com.google.android.filament.pagecurl'
+
     compileSdkVersion versions.compileSdk
     defaultConfig {
         applicationId "com.google.android.filament.pagecurl"
@@ -35,6 +41,11 @@ android {
     // Telling aapt to not compress them allows to load them efficiently
     aaptOptions {
         noCompress 'filamat'
+    }
+
+    compileOptions {
+        sourceCompatibility versions.jdk
+        targetCompatibility versions.jdk
     }
 }
 

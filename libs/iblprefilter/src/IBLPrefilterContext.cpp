@@ -19,6 +19,7 @@
 #include <filament/Engine.h>
 #include <filament/IndexBuffer.h>
 #include <filament/Material.h>
+#include <filament/MaterialEnums.h>
 #include <filament/RenderTarget.h>
 #include <filament/RenderableManager.h>
 #include <filament/Renderer.h>
@@ -29,12 +30,22 @@
 #include <filament/View.h>
 #include <filament/Viewport.h>
 
-#include <utils/Panic.h>
+#include <backend/DriverEnums.h>
+
+#include <utils/compiler.h>
 #include <utils/EntityManager.h>
+#include <utils/Panic.h>
 #include <utils/Systrace.h>
 
-#include <math/mat3.h>
-#include <math/vec3.h>
+#include <math/scalar.h>
+#include <math/vec4.h>
+
+#include <algorithm>
+#include <cmath>
+#include <utility>
+
+#include <stddef.h>
+#include <stdint.h>
 
 #include "generated/resources/iblprefilter_materials.h"
 
@@ -78,6 +89,12 @@ IBLPrefilterContext::IBLPrefilterContext(Engine& engine)
             IBLPREFILTER_MATERIALS_IBLPREFILTER_DATA,
             IBLPREFILTER_MATERIALS_IBLPREFILTER_SIZE).build(engine);
 
+    mIrradianceIntegrationMaterial = Material::Builder().package(
+            IBLPREFILTER_MATERIALS_IBLPREFILTER_DATA,
+            IBLPREFILTER_MATERIALS_IBLPREFILTER_SIZE)
+                    .constant("irradiance", true)
+                    .build(engine);
+
     mVertexBuffer = VertexBuffer::Builder()
             .vertexCount(3)
             .bufferCount(1)
@@ -97,10 +114,8 @@ IBLPrefilterContext::IBLPrefilterContext(Engine& engine)
     mIndexBuffer->setBuffer(engine,
             { sFullScreenTriangleIndices, sizeof(sFullScreenTriangleIndices) });
 
-
     RenderableManager::Builder(1)
             .geometry(0, RenderableManager::PrimitiveType::TRIANGLES, mVertexBuffer, mIndexBuffer)
-            .material(0, mIntegrationMaterial->getDefaultInstance())
             .culling(false)
             .castShadows(false)
             .receiveShadows(false)
@@ -131,6 +146,7 @@ IBLPrefilterContext::~IBLPrefilterContext() noexcept {
     engine.destroy(mVertexBuffer);
     engine.destroy(mIndexBuffer);
     engine.destroy(mIntegrationMaterial);
+    engine.destroy(mIrradianceIntegrationMaterial);
     engine.destroy(mFullScreenQuadEntity);
     engine.destroyCameraComponent(mCameraEntity);
     em.destroy(mFullScreenQuadEntity);
@@ -154,6 +170,7 @@ IBLPrefilterContext& IBLPrefilterContext::operator=(IBLPrefilterContext&& rhs) n
         swap(mCameraEntity, rhs.mCameraEntity);
         swap(mView, rhs.mView);
         swap(mIntegrationMaterial, rhs.mIntegrationMaterial);
+        swap(mIrradianceIntegrationMaterial, rhs.mIrradianceIntegrationMaterial);
     }
     return *this;
 }
@@ -161,11 +178,17 @@ IBLPrefilterContext& IBLPrefilterContext::operator=(IBLPrefilterContext&& rhs) n
 // ------------------------------------------------------------------------------------------------
 
 IBLPrefilterContext::EquirectangularToCubemap::EquirectangularToCubemap(
-        IBLPrefilterContext& context) : mContext(context) {
+        IBLPrefilterContext& context,
+        IBLPrefilterContext::EquirectangularToCubemap::Config const& config)
+        : mContext(context), mConfig(config) {
     Engine& engine = mContext.mEngine;
     mEquirectMaterial = Material::Builder().package(
             IBLPREFILTER_MATERIALS_EQUIRECTTOCUBE_DATA,
             IBLPREFILTER_MATERIALS_EQUIRECTTOCUBE_SIZE).build(engine);
+}
+
+IBLPrefilterContext::EquirectangularToCubemap::EquirectangularToCubemap(
+        IBLPrefilterContext& context) : EquirectangularToCubemap(context, {}) {
 }
 
 IBLPrefilterContext::EquirectangularToCubemap::~EquirectangularToCubemap() noexcept {
@@ -203,18 +226,18 @@ Texture* IBLPrefilterContext::EquirectangularToCubemap::operator()(
     Engine& engine = mContext.mEngine;
     View* const view = mContext.mView;
     Renderer* const renderer = mContext.mRenderer;
-    MaterialInstance* const mi = mEquirectMaterial->getDefaultInstance();
+    MaterialInstance* const mi = mEquirectMaterial->createInstance();
 
-    ASSERT_PRECONDITION(equirect != nullptr, "equirect is null!");
+    FILAMENT_CHECK_PRECONDITION(equirect != nullptr) << "equirect is null!";
 
-    ASSERT_PRECONDITION(equirect->getTarget() == Texture::Sampler::SAMPLER_2D,
-            "equirect must be a 2D texture.");
+    FILAMENT_CHECK_PRECONDITION(equirect->getTarget() == Texture::Sampler::SAMPLER_2D)
+            << "equirect must be a 2D texture.";
 
     UTILS_UNUSED_IN_RELEASE
-    const uint8_t maxLevelCount = uint8_t(std::log2(equirect->getWidth()) + 0.5f) + 1u;
+    const uint8_t maxLevelCount = std::max(1, std::ilogbf(float(equirect->getWidth())) + 1);
 
-    ASSERT_PRECONDITION(equirect->getLevels() == maxLevelCount,
-            "equirect must have %u mipmap levels allocated.", +maxLevelCount);
+    FILAMENT_CHECK_PRECONDITION(equirect->getLevels() == maxLevelCount)
+            << "equirect must have " << +maxLevelCount << " mipmap levels allocated.";
 
     if (outCube == nullptr) {
         outCube = Texture::Builder()
@@ -225,14 +248,14 @@ Texture* IBLPrefilterContext::EquirectangularToCubemap::operator()(
                 .build(engine);
     }
 
-    ASSERT_PRECONDITION(outCube->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP,
-            "outCube must be a Cubemap texture.");
+    FILAMENT_CHECK_PRECONDITION(outCube->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP)
+            << "outCube must be a Cubemap texture.";
 
     const uint32_t dim = outCube->getWidth();
 
     RenderableManager& rcm = engine.getRenderableManager();
-    rcm.setMaterialInstanceAt(
-            rcm.getInstance(mContext.mFullScreenQuadEntity), 0, mi);
+    auto const ci = rcm.getInstance(mContext.mFullScreenQuadEntity);
+    rcm.setMaterialInstanceAt(ci, 0, mi);
 
     TextureSampler environmentSampler;
     environmentSampler.setMagFilter(SamplerMagFilter::LINEAR);
@@ -251,6 +274,8 @@ Texture* IBLPrefilterContext::EquirectangularToCubemap::operator()(
            .texture(RenderTarget::AttachmentPoint::COLOR1, outCube)
            .texture(RenderTarget::AttachmentPoint::COLOR2, outCube);
 
+    mi->setParameter("mirror", mConfig.mirror ? -1.0f : 1.0f);
+
     for (size_t i = 0; i < 2; i++) {
         mi->setParameter("side", i == 0 ? 1.0f : -1.0f);
 
@@ -264,12 +289,217 @@ Texture* IBLPrefilterContext::EquirectangularToCubemap::operator()(
         engine.destroy(rt);
     }
 
+    rcm.clearMaterialInstanceAt(ci, 0);
+    engine.destroy(mi);
+
     return outCube;
 }
+
+// ------------------------------------------------------------------------------------------------
+
+IBLPrefilterContext::IrradianceFilter::IrradianceFilter(IBLPrefilterContext& context,
+        IBLPrefilterContext::IrradianceFilter::Config config)
+        : mContext(context),
+         mSampleCount(std::min(config.sampleCount, uint16_t(2048))) {
+
+    SYSTRACE_CALL();
+    using namespace backend;
+
+    Engine& engine = mContext.mEngine;
+    View* const view = mContext.mView;
+    Renderer* const renderer = mContext.mRenderer;
+
+    mKernelMaterial = Material::Builder().package(
+            IBLPREFILTER_MATERIALS_GENERATEKERNEL_DATA,
+            IBLPREFILTER_MATERIALS_GENERATEKERNEL_SIZE)
+                    .constant("irradiance", true)
+                    .build(engine);
+
+    // { L.x, L.y, L.z, lod }
+    mKernelTexture = Texture::Builder()
+            .sampler(Texture::Sampler::SAMPLER_2D)
+            .format(Texture::InternalFormat::RGBA16F)
+            .usage(Texture::Usage::SAMPLEABLE | Texture::Usage::COLOR_ATTACHMENT)
+            .width(1)
+            .height(mSampleCount)
+            .build(engine);
+
+    MaterialInstance* const mi = mKernelMaterial->createInstance();
+    mi->setParameter("size", uint2{ 1, mSampleCount });
+    mi->setParameter("sampleCount", float(mSampleCount));
+
+    RenderableManager& rcm = engine.getRenderableManager();
+    auto const ci = rcm.getInstance(mContext.mFullScreenQuadEntity);
+    rcm.setMaterialInstanceAt(ci, 0, mi);
+
+    RenderTarget* const rt = RenderTarget::Builder()
+            .texture(RenderTarget::AttachmentPoint::COLOR0, mKernelTexture)
+            .build(engine);
+
+    view->setRenderTarget(rt);
+    view->setViewport({ 0, 0, 1, mSampleCount });
+
+    renderer->renderStandaloneView(view);
+
+    rcm.clearMaterialInstanceAt(ci, 0);
+
+    engine.destroy(rt);
+    engine.destroy(mi);
+}
+
+UTILS_NOINLINE
+IBLPrefilterContext::IrradianceFilter::IrradianceFilter(IBLPrefilterContext& context)
+        : IrradianceFilter(context, {}) {
+}
+
+IBLPrefilterContext::IrradianceFilter::~IrradianceFilter() noexcept {
+    Engine& engine = mContext.mEngine;
+    engine.destroy(mKernelTexture);
+    engine.destroy(mKernelMaterial);
+}
+
+IBLPrefilterContext::IrradianceFilter::IrradianceFilter(
+        IBLPrefilterContext::IrradianceFilter&& rhs) noexcept
+        : mContext(rhs.mContext) {
+    this->operator=(std::move(rhs));
+}
+
+IBLPrefilterContext::IrradianceFilter& IBLPrefilterContext::IrradianceFilter::operator=(
+        IBLPrefilterContext::IrradianceFilter&& rhs) noexcept {
+    using std::swap;
+    if (this != & rhs) {
+        swap(mKernelMaterial, rhs.mKernelMaterial);
+        swap(mKernelTexture, rhs.mKernelTexture);
+        mSampleCount = rhs.mSampleCount;
+    }
+    return *this;
+}
+
+filament::Texture* IBLPrefilterContext::IrradianceFilter::operator()(
+        IBLPrefilterContext::IrradianceFilter::Options options,
+        filament::Texture const* environmentCubemap, filament::Texture* outIrradianceTexture) {
+
+    SYSTRACE_CALL();
+    using namespace backend;
+
+    FILAMENT_CHECK_PRECONDITION(environmentCubemap != nullptr) << "environmentCubemap is null!";
+
+    FILAMENT_CHECK_PRECONDITION(
+            environmentCubemap->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP)
+            << "environmentCubemap must be a cubemap.";
+
+    UTILS_UNUSED_IN_RELEASE
+    const uint8_t maxLevelCount = uint8_t(std::log2(environmentCubemap->getWidth()) + 0.5f) + 1u;
+
+    FILAMENT_CHECK_PRECONDITION(environmentCubemap->getLevels() == maxLevelCount)
+            << "environmentCubemap must have " << +maxLevelCount << " mipmap levels allocated.";
+
+    if (outIrradianceTexture == nullptr) {
+        outIrradianceTexture = createIrradianceTexture();
+    }
+
+    FILAMENT_CHECK_PRECONDITION(
+            outIrradianceTexture->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP)
+            << "outReflectionsTexture must be a cubemap.";
+
+    const TextureCubemapFace faces[2][3] = {
+            { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::POSITIVE_Z },
+            { TextureCubemapFace::NEGATIVE_X, TextureCubemapFace::NEGATIVE_Y, TextureCubemapFace::NEGATIVE_Z }
+    };
+
+    Engine& engine = mContext.mEngine;
+    View* const view = mContext.mView;
+    Renderer* const renderer = mContext.mRenderer;
+    MaterialInstance* const mi = mContext.mIrradianceIntegrationMaterial->createInstance();
+
+    RenderableManager& rcm = engine.getRenderableManager();
+    auto const ci = rcm.getInstance(mContext.mFullScreenQuadEntity);
+    rcm.setMaterialInstanceAt(ci, 0, mi);
+
+    const uint32_t sampleCount = mSampleCount;
+    const float linear = options.hdrLinear;
+    const float compress = options.hdrMax;
+    const uint32_t dim = outIrradianceTexture->getWidth();
+    const float omegaP = (4.0f * f::PI) / float(6 * dim * dim);
+
+    TextureSampler environmentSampler;
+    environmentSampler.setMagFilter(SamplerMagFilter::LINEAR);
+    environmentSampler.setMinFilter(SamplerMinFilter::LINEAR_MIPMAP_LINEAR);
+
+    mi->setParameter("environment", environmentCubemap, environmentSampler);
+    mi->setParameter("kernel", mKernelTexture, TextureSampler{ SamplerMagFilter::NEAREST });
+    mi->setParameter("compress", float2{ linear, compress });
+    mi->setParameter("lodOffset", options.lodOffset - log4(omegaP));
+    mi->setParameter("sampleCount", sampleCount);
+
+    if (options.generateMipmap) {
+        // We need mipmaps for prefiltering
+        environmentCubemap->generateMipmaps(engine);
+    }
+
+    RenderTarget::Builder builder;
+    builder.texture(RenderTarget::AttachmentPoint::COLOR0, outIrradianceTexture)
+           .texture(RenderTarget::AttachmentPoint::COLOR1, outIrradianceTexture)
+           .texture(RenderTarget::AttachmentPoint::COLOR2, outIrradianceTexture);
+
+
+    view->setViewport({ 0, 0, dim, dim });
+
+    for (size_t i = 0; i < 2; i++) {
+        mi->setParameter("side", i == 0 ? 1.0f : -1.0f);
+
+        builder.face(RenderTarget::AttachmentPoint::COLOR0, faces[i][0])
+               .face(RenderTarget::AttachmentPoint::COLOR1, faces[i][1])
+               .face(RenderTarget::AttachmentPoint::COLOR2, faces[i][2]);
+
+        RenderTarget* const rt = builder.build(engine);
+        view->setRenderTarget(rt);
+        renderer->renderStandaloneView(view);
+        engine.destroy(rt);
+    }
+
+    rcm.clearMaterialInstanceAt(ci, 0);
+
+    engine.destroy(mi);
+
+    return outIrradianceTexture;
+}
+
+UTILS_NOINLINE
+filament::Texture* IBLPrefilterContext::IrradianceFilter::operator()(
+        filament::Texture const* environmentCubemap, filament::Texture* outIrradianceTexture) {
+    return operator()({}, environmentCubemap, outIrradianceTexture);
+}
+
+filament::Texture* IBLPrefilterContext::IrradianceFilter::createIrradianceTexture() {
+    Engine& engine = mContext.mEngine;
+
+    Texture* const outCubemap = Texture::Builder()
+            .sampler(Texture::Sampler::SAMPLER_CUBEMAP)
+            .format(Texture::InternalFormat::R11F_G11F_B10F)
+            .usage(Texture::Usage::COLOR_ATTACHMENT | Texture::Usage::SAMPLEABLE)
+            .width(256).height(256).levels(0xff)
+            .build(engine);
+
+    return outCubemap;
+}
+
 // ------------------------------------------------------------------------------------------------
 
 IBLPrefilterContext::SpecularFilter::SpecularFilter(IBLPrefilterContext& context, Config config)
     : mContext(context) {
+
+    auto lodToPerceptualRoughness = [](const float lod) -> float {
+        // Inverse perceptualRoughness-to-LOD mapping:
+        // The LOD-to-perceptualRoughness mapping is a quadratic fit for
+        // log2(perceptualRoughness)+iblMaxMipLevel when iblMaxMipLevel is 4.
+        // We found empirically that this mapping works very well for a 256 cubemap with 5 levels used,
+        // but also scales well for other iblMaxMipLevel values.
+        const float a = 2.0f;
+        const float b = -1.0f;
+        return (lod != 0.0f) ? saturate((sqrt(a * a + 4.0f * b * lod) - a) / (2.0f * b)) : 0.0f;
+    };
+
     SYSTRACE_CALL();
     using namespace backend;
 
@@ -285,7 +515,6 @@ IBLPrefilterContext::SpecularFilter::SpecularFilter(IBLPrefilterContext& context
             IBLPREFILTER_MATERIALS_GENERATEKERNEL_DATA,
             IBLPREFILTER_MATERIALS_GENERATEKERNEL_SIZE).build(engine);
 
-
     // { L.x, L.y, L.z, lod }
     mKernelTexture = Texture::Builder()
             .sampler(Texture::Sampler::SAMPLER_2D)
@@ -295,14 +524,22 @@ IBLPrefilterContext::SpecularFilter::SpecularFilter(IBLPrefilterContext& context
             .height(mSampleCount)
             .build(engine);
 
-    MaterialInstance* const mi = mKernelMaterial->getDefaultInstance();
+    float roughnessArray[16] = {};
+    for (size_t i = 0, c = mLevelCount; i < c; i++) {
+        float const perceptualRoughness = lodToPerceptualRoughness(
+                saturate(float(i) * (1.0f / (float(mLevelCount) - 1.0f))));
+        float const roughness = perceptualRoughness * perceptualRoughness;
+        roughnessArray[i] = roughness;
+    }
+
+    MaterialInstance* const mi = mKernelMaterial->createInstance();
     mi->setParameter("size", uint2{ mLevelCount, mSampleCount });
     mi->setParameter("sampleCount", float(mSampleCount));
-    mi->setParameter("oneOverLevelsMinusOne", 1.0f / (mLevelCount - 1.0f));
+    mi->setParameter("roughness", roughnessArray, 16);
 
     RenderableManager& rcm = engine.getRenderableManager();
-    rcm.setMaterialInstanceAt(
-            rcm.getInstance(mContext.mFullScreenQuadEntity), 0, mi);
+    auto const ci = rcm.getInstance(mContext.mFullScreenQuadEntity);
+    rcm.setMaterialInstanceAt(ci, 0, mi);
 
     RenderTarget* const rt = RenderTarget::Builder()
             .texture(RenderTarget::AttachmentPoint::COLOR0, mKernelTexture)
@@ -313,7 +550,10 @@ IBLPrefilterContext::SpecularFilter::SpecularFilter(IBLPrefilterContext& context
 
     renderer->renderStandaloneView(view);
 
+    rcm.clearMaterialInstanceAt(ci, 0);
+
     engine.destroy(rt);
+    engine.destroy(mi);
 }
 
 UTILS_NOINLINE
@@ -375,27 +615,29 @@ Texture* IBLPrefilterContext::SpecularFilter::operator()(
     SYSTRACE_CALL();
     using namespace backend;
 
-    ASSERT_PRECONDITION(environmentCubemap != nullptr, "environmentCubemap is null!");
+    FILAMENT_CHECK_PRECONDITION(environmentCubemap != nullptr) << "environmentCubemap is null!";
 
-    ASSERT_PRECONDITION(environmentCubemap->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP,
-            "environmentCubemap must be a cubemap.");
+    FILAMENT_CHECK_PRECONDITION(
+            environmentCubemap->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP)
+            << "environmentCubemap must be a cubemap.";
 
     UTILS_UNUSED_IN_RELEASE
     const uint8_t maxLevelCount = uint8_t(std::log2(environmentCubemap->getWidth()) + 0.5f) + 1u;
 
-    ASSERT_PRECONDITION(environmentCubemap->getLevels() == maxLevelCount,
-            "environmentCubemap must have %u mipmap levels allocated.", +maxLevelCount);
+    FILAMENT_CHECK_PRECONDITION(environmentCubemap->getLevels() == maxLevelCount)
+            << "environmentCubemap must have " << +maxLevelCount << " mipmap levels allocated.";
 
     if (outReflectionsTexture == nullptr) {
         outReflectionsTexture = createReflectionsTexture();
     }
 
-    ASSERT_PRECONDITION(outReflectionsTexture->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP,
-            "outReflectionsTexture must be a cubemap.");
+    FILAMENT_CHECK_PRECONDITION(
+            outReflectionsTexture->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP)
+            << "outReflectionsTexture must be a cubemap.";
 
-    ASSERT_PRECONDITION(mLevelCount <= outReflectionsTexture->getLevels(),
-            "outReflectionsTexture has %u levels but %u are requested.",
-            +outReflectionsTexture->getLevels(), +mLevelCount);
+    FILAMENT_CHECK_PRECONDITION(mLevelCount <= outReflectionsTexture->getLevels())
+            << "outReflectionsTexture has " << +outReflectionsTexture->getLevels() << " levels but "
+            << +mLevelCount << " are requested.";
 
     const TextureCubemapFace faces[2][3] = {
             { TextureCubemapFace::POSITIVE_X, TextureCubemapFace::POSITIVE_Y, TextureCubemapFace::POSITIVE_Z },
@@ -405,11 +647,11 @@ Texture* IBLPrefilterContext::SpecularFilter::operator()(
     Engine& engine = mContext.mEngine;
     View* const view = mContext.mView;
     Renderer* const renderer = mContext.mRenderer;
-    MaterialInstance* const mi = mContext.mIntegrationMaterial->getDefaultInstance();
+    MaterialInstance* const mi = mContext.mIntegrationMaterial->createInstance();
 
     RenderableManager& rcm = engine.getRenderableManager();
-    rcm.setMaterialInstanceAt(
-            rcm.getInstance(mContext.mFullScreenQuadEntity), 0, mi);
+    auto const ci = rcm.getInstance(mContext.mFullScreenQuadEntity);
+    rcm.setMaterialInstanceAt(ci, 0, mi);
 
     const uint32_t sampleCount = mSampleCount;
     const float linear = options.hdrLinear;
@@ -471,6 +713,10 @@ Texture* IBLPrefilterContext::SpecularFilter::operator()(
 
         dim >>= 1;
     }
+
+    rcm.clearMaterialInstanceAt(ci, 0);
+
+    engine.destroy(mi);
 
     return outReflectionsTexture;
 }

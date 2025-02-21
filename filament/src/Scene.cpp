@@ -24,51 +24,59 @@ using namespace utils;
 namespace filament {
 
 void Scene::setSkybox(Skybox* skybox) noexcept {
-    upcast(this)->setSkybox(upcast(skybox));
+    downcast(this)->setSkybox(downcast(skybox));
 }
 
-Skybox* Scene::getSkybox() noexcept {
-    return upcast(this)->getSkybox();
+Skybox* Scene::getSkybox() const noexcept {
+    return downcast(this)->getSkybox();
 }
 
-Skybox const* Scene::getSkybox() const noexcept {
-    return upcast(this)->getSkybox();
+void Scene::setIndirectLight(IndirectLight* ibl) noexcept {
+    downcast(this)->setIndirectLight(downcast(ibl));
 }
 
-void Scene::setIndirectLight(IndirectLight const* ibl) noexcept {
-    upcast(this)->setIndirectLight(upcast(ibl));
+IndirectLight* Scene::getIndirectLight() const noexcept {
+    return downcast(this)->getIndirectLight();
 }
 
-void Scene::addEntity(Entity entity) {
-    upcast(this)->addEntity(entity);
+void Scene::addEntity(Entity const entity) {
+    downcast(this)->addEntity(entity);
 }
 
-void Scene::addEntities(const Entity* entities, size_t count) {
-    upcast(this)->addEntities(entities, count);
+void Scene::addEntities(const Entity* entities, size_t const count) {
+    downcast(this)->addEntities(entities, count);
 }
 
-void Scene::remove(Entity entity) {
-    upcast(this)->remove(entity);
+void Scene::remove(Entity const entity) {
+    downcast(this)->remove(entity);
 }
 
-void Scene::removeEntities(const Entity* entities, size_t count) {
-    upcast(this)->removeEntities(entities, count);
+void Scene::removeEntities(const Entity* entities, size_t const count) {
+    downcast(this)->removeEntities(entities, count);
+}
+
+void Scene::removeAllEntities() noexcept {
+    downcast(this)->removeAllEntities();
+}
+
+size_t Scene::getEntityCount() const noexcept {
+    return downcast(this)->getEntityCount();
 }
 
 size_t Scene::getRenderableCount() const noexcept {
-    return upcast(this)->getRenderableCount();
+    return downcast(this)->getRenderableCount();
 }
 
 size_t Scene::getLightCount() const noexcept {
-    return upcast(this)->getLightCount();
+    return downcast(this)->getLightCount();
 }
 
-bool Scene::hasEntity(Entity entity) const noexcept {
-    return upcast(this)->hasEntity(entity);
+bool Scene::hasEntity(Entity const entity) const noexcept {
+    return downcast(this)->hasEntity(entity);
 }
 
-void Scene::forEach(Invocable<void(utils::Entity)>&& functor) const noexcept {
-    upcast(this)->forEach(std::move(functor));
+void Scene::forEach(Invocable<void(Entity)>&& functor) const noexcept {
+    downcast(this)->forEach(std::move(functor));
 }
 
 } // namespace filament

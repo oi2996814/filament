@@ -17,7 +17,7 @@
 #ifndef TNT_FILAMENT_DETAILS_SKYBOX_H
 #define TNT_FILAMENT_DETAILS_SKYBOX_H
 
-#include "upcast.h"
+#include "downcast.h"
 
 #include <filament/Skybox.h>
 
@@ -53,9 +53,6 @@ public:
 
     void setColor(math::float4 color) noexcept;
 
-    // commits UBOs
-    void commit(backend::DriverApi& driver) noexcept;
-
 private:
     // we don't own these
     FTexture const* mSkyboxTexture = nullptr;
@@ -68,7 +65,7 @@ private:
     uint8_t mLayerMask = 0x1;
 };
 
-FILAMENT_UPCAST(Skybox)
+FILAMENT_DOWNCAST(Skybox)
 
 } // namespace filament
 

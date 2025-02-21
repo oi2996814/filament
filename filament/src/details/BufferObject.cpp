@@ -20,6 +20,8 @@
 
 #include "FilamentAPI-impl.h"
 
+#include <utils/CString.h>
+
 namespace filament {
 
 struct BufferObject::BuilderDetails {
@@ -30,32 +32,39 @@ struct BufferObject::BuilderDetails {
 using BuilderType = BufferObject;
 BuilderType::Builder::Builder() noexcept = default;
 BuilderType::Builder::~Builder() noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder&& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder const& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder&& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder const& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder&& rhs) noexcept = default;
 
-BufferObject::Builder& BufferObject::Builder::size(uint32_t byteCount) noexcept {
+BufferObject::Builder& BufferObject::Builder::size(uint32_t const byteCount) noexcept {
     mImpl->mByteCount = byteCount;
     return *this;
 }
 
-BufferObject::Builder& BufferObject::Builder::bindingType(BindingType bindingType) noexcept {
+BufferObject::Builder& BufferObject::Builder::bindingType(BindingType const bindingType) noexcept {
     mImpl->mBindingType = bindingType;
     return *this;
 }
 
+BufferObject::Builder& BufferObject::Builder::name(const char* name, size_t const len) noexcept {
+    return BuilderNameMixin::name(name, len);
+}
+
 BufferObject* BufferObject::Builder::build(Engine& engine) {
-    return upcast(engine).createBufferObject(*this);
+    return downcast(engine).createBufferObject(*this);
 }
 
 // ------------------------------------------------------------------------------------------------
 
-FBufferObject::FBufferObject(FEngine& engine, const BufferObject::Builder& builder)
+FBufferObject::FBufferObject(FEngine& engine, const Builder& builder)
         : mByteCount(builder->mByteCount), mBindingType(builder->mBindingType) {
     FEngine::DriverApi& driver = engine.getDriverApi();
     mHandle = driver.createBufferObject(builder->mByteCount, builder->mBindingType,
             backend::BufferUsage::STATIC);
+    if (auto name = builder.getName(); !name.empty()) {
+        driver.setDebugTag(mHandle.getId(), std::move(name));
+    }
 }
 
 void FBufferObject::terminate(FEngine& engine) {
@@ -63,7 +72,7 @@ void FBufferObject::terminate(FEngine& engine) {
     driver.destroyBufferObject(mHandle);
 }
 
-void FBufferObject::setBuffer(FEngine& engine, BufferDescriptor&& buffer, uint32_t byteOffset) {
+void FBufferObject::setBuffer(FEngine& engine, BufferDescriptor&& buffer, uint32_t const byteOffset) {
     engine.getDriverApi().updateBufferObject(mHandle, std::move(buffer), byteOffset);
 }
 
