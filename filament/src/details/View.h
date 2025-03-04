@@ -17,21 +17,24 @@
 #ifndef TNT_FILAMENT_DETAILS_VIEW_H
 #define TNT_FILAMENT_DETAILS_VIEW_H
 
-#include <filament/View.h>
-
-#include <filament/Renderer.h>
-
-#include "upcast.h"
+#include "downcast.h"
 
 #include "Allocators.h"
+#include "Culler.h"
 #include "FrameHistory.h"
 #include "FrameInfo.h"
 #include "Froxelizer.h"
-#include "PerViewUniforms.h"
 #include "PIDController.h"
-#include "ShadowMap.h"
 #include "ShadowMapManager.h"
-#include "TypedUniformBuffer.h"
+
+#include "ds/ColorPassDescriptorSet.h"
+#include "ds/DescriptorSet.h"
+#include "ds/PostProcessDescriptorSet.h"
+#include "ds/SsrPassDescriptorSet.h"
+#include "ds/TypedUniformBuffer.h"
+
+#include "components/LightManager.h"
+#include "components/RenderableManager.h"
 
 #include "details/Camera.h"
 #include "details/ColorGrading.h"
@@ -39,19 +42,41 @@
 #include "details/Scene.h"
 
 #include <private/filament/EngineEnums.h>
+#include <private/filament/UibStructs.h>
 
-#include "private/backend/DriverApi.h"
+#include <private/backend/DriverApi.h>
 
+#include <filament/Frustum.h>
+#include <filament/Renderer.h>
+#include <filament/View.h>
+
+#include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 
 #include <utils/compiler.h>
 #include <utils/Allocator.h>
+#include <utils/Entity.h>
 #include <utils/StructureOfArrays.h>
 #include <utils/Range.h>
 #include <utils/Slice.h>
 
+#if FILAMENT_ENABLE_FGVIEWER
+#include <fgviewer/DebugServer.h>
+#else
+namespace filament::fgviewer {
+    using ViewHandle = uint32_t;
+}
+#endif
+
 #include <math/scalar.h>
 #include <math/mat4.h>
+
+#include <array>
+#include <memory>
+#include <new>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace utils {
 class JobSystem;
@@ -73,8 +98,6 @@ class FMaterialInstance;
 class FRenderer;
 class FScene;
 
-static constexpr Culler::result_type VISIBLE_RENDERABLE = 1u << VISIBLE_RENDERABLE_BIT;
-
 // ------------------------------------------------------------------------------------------------
 
 class FView : public View {
@@ -88,8 +111,10 @@ public:
 
     CameraInfo computeCameraInfo(FEngine& engine) const noexcept;
 
-    void prepare(FEngine& engine, backend::DriverApi& driver, ArenaScope& arena,
-            filament::Viewport const& viewport, CameraInfo const& cameraInfo,
+    // note: viewport/cameraInfo are passed by value to make it clear that prepare cannot
+    // keep references on them that would outlive the scope of prepare() (e.g. with JobSystem).
+    void prepare(FEngine& engine, backend::DriverApi& driver, RootArenaScope& rootArenaScope,
+            Viewport viewport, CameraInfo cameraInfo,
             math::float4 const& userTime, bool needsAlphaChannel) noexcept;
 
     void setScene(FScene* scene) { mScene = scene; }
@@ -110,11 +135,14 @@ public:
     }
     bool isSkyboxVisible() const noexcept;
 
-    void setFrustumCullingEnabled(bool culling) noexcept { mCulling = culling; }
+    void setFrustumCullingEnabled(bool const culling) noexcept { mCulling = culling; }
     bool isFrustumCullingEnabled() const noexcept { return mCulling; }
 
-    void setFrontFaceWindingInverted(bool inverted) noexcept { mFrontFaceWindingInverted = inverted; }
+    void setFrontFaceWindingInverted(bool const inverted) noexcept { mFrontFaceWindingInverted = inverted; }
     bool isFrontFaceWindingInverted() const noexcept { return mFrontFaceWindingInverted; }
+
+    void setTransparentPickingEnabled(bool const enabled) noexcept { mIsTransparentPickingEnabled = enabled; }
+    bool isTransparentPickingEnabled() const noexcept { return mIsTransparentPickingEnabled; }
 
 
     void setVisibleLayers(uint8_t select, uint8_t values) noexcept;
@@ -131,59 +159,82 @@ public:
         return mName.c_str_safe();
     }
 
-    void prepareUpscaler(math::float2 scale) const noexcept;
-    void prepareCamera(const CameraInfo& cameraInfo) const noexcept;
-    void prepareViewport(const Viewport& viewport, uint32_t xoffset, uint32_t yoffset) const noexcept;
-    void prepareShadowing(FEngine& engine, backend::DriverApi& driver,
-            FScene::RenderableSoa& renderableData, FScene::LightSoa& lightData,
-            CameraInfo const& cameraInfo) noexcept;
-    void prepareLighting(FEngine& engine, FEngine::DriverApi& driver, ArenaScope& arena,
-            filament::Viewport const& viewport, CameraInfo const &cameraInfo) noexcept;
+    void prepareUpscaler(math::float2 scale,
+            TemporalAntiAliasingOptions const& taaOptions,
+            DynamicResolutionOptions const& dsrOptions) const noexcept;
+    void prepareCamera(FEngine& engine, const CameraInfo& cameraInfo) const noexcept;
+
+    void prepareViewport(
+            const Viewport& physicalViewport,
+            const Viewport& logicalViewport) const noexcept;
+
+    void prepareShadowing(FEngine& engine, FScene::RenderableSoa& renderableData,
+            FScene::LightSoa const& lightData, CameraInfo const& cameraInfo) noexcept;
+    void prepareLighting(FEngine& engine, CameraInfo const& cameraInfo) noexcept;
 
     void prepareSSAO(backend::Handle<backend::HwTexture> ssao) const noexcept;
-    void prepareSSR(backend::Handle<backend::HwTexture> ssr, float refractionLodOffset,
-            ScreenSpaceReflectionsOptions const& ssrOptions) const noexcept;
-    void prepareHistorySSR(backend::Handle<backend::HwTexture> ssr,
-            math::mat4f const& historyProjection, math::mat4f const& uvFromViewMatrix,
+    void prepareSSR(backend::Handle<backend::HwTexture> ssr, bool disableSSR,
+            float refractionLodOffset,
             ScreenSpaceReflectionsOptions const& ssrOptions) const noexcept;
     void prepareStructure(backend::Handle<backend::HwTexture> structure) const noexcept;
     void prepareShadow(backend::Handle<backend::HwTexture> structure) const noexcept;
-    void prepareShadowMap() const noexcept;
+    void prepareShadowMapping(bool highPrecision) const noexcept;
 
-    void cleanupRenderPasses() const noexcept;
-    void froxelize(FEngine& engine, math::mat4f const& viewMatrix) const noexcept;
-    void commitUniforms(backend::DriverApi& driver) const noexcept;
     void commitFroxels(backend::DriverApi& driverApi) const noexcept;
+    void commitUniformsAndSamplers(backend::DriverApi& driver) const noexcept;
+    void unbindSamplers(backend::DriverApi& driver) noexcept;
 
-    bool hasDirectionalLight() const noexcept { return mHasDirectionalLight; }
+    utils::JobSystem::Job* getFroxelizerSync() const noexcept { return mFroxelizerSync; }
+    void setFroxelizerSync(utils::JobSystem::Job* sync) noexcept { mFroxelizerSync = sync; }
+
+    // ultimately decides to use the DIR variant
+    bool hasDirectionalLighting() const noexcept { return mHasDirectionalLighting; }
+
+    // ultimately decides to use the DYN variant
     bool hasDynamicLighting() const noexcept { return mHasDynamicLighting; }
+
+    // ultimately decides to use the SRE variant
     bool hasShadowing() const noexcept { return mHasShadowing; }
+
+    bool needsDirectionalShadowMaps() const noexcept { return mHasShadowing && mHasDirectionalLighting; }
+    bool needsPointShadowMaps() const noexcept { return mHasShadowing && mHasDynamicLighting; }
     bool needsShadowMap() const noexcept { return mNeedsShadowMap; }
     bool hasFog() const noexcept { return mFogOptions.enabled && mFogOptions.density > 0.0f; }
     bool hasVSM() const noexcept { return mShadowType == ShadowType::VSM; }
     bool hasDPCF() const noexcept { return mShadowType == ShadowType::DPCF; }
     bool hasPCSS() const noexcept { return mShadowType == ShadowType::PCSS; }
     bool hasPicking() const noexcept { return mActivePickingQueriesList != nullptr; }
+    bool hasStereo() const noexcept {
+        return mIsStereoSupported && mStereoscopicOptions.enabled;
+    }
 
-    FrameGraphId<FrameGraphTexture> renderShadowMaps(FrameGraph& fg, FEngine& engine,
-            FEngine::DriverApi& driver, RenderPass const& pass) noexcept;
+    FrameGraphId<FrameGraphTexture> renderShadowMaps(FEngine& engine, FrameGraph& fg,
+            CameraInfo const& cameraInfo, math::float4 const& userTime,
+            RenderPassBuilder const& passBuilder) noexcept;
 
-    void updatePrimitivesLod(
-            FEngine& engine, const CameraInfo& camera,
-            FScene::RenderableSoa& renderableData, Range visible) noexcept;
+    static void updatePrimitivesLod(FScene::RenderableSoa& renderableData,
+            FEngine const& engine, CameraInfo const& camera,
+            Range visible) noexcept;
 
-    void setShadowingEnabled(bool enabled) noexcept { mShadowingEnabled = enabled; }
+    void setShadowingEnabled(bool const enabled) noexcept { mShadowingEnabled = enabled; }
 
     bool isShadowingEnabled() const noexcept { return mShadowingEnabled; }
 
-    void setScreenSpaceRefractionEnabled(bool enabled) noexcept { mScreenSpaceRefractionEnabled = enabled; }
+    void setScreenSpaceRefractionEnabled(bool const enabled) noexcept { mScreenSpaceRefractionEnabled = enabled; }
 
     bool isScreenSpaceRefractionEnabled() const noexcept { return mScreenSpaceRefractionEnabled; }
 
     bool isScreenSpaceReflectionEnabled() const noexcept { return mScreenSpaceReflectionsOptions.enabled; }
 
-    FCamera const* getDirectionalLightCamera() const noexcept {
-        return &mShadowMapManager.getCascadeShadowMap(0)->getDebugCamera();
+    void setStencilBufferEnabled(bool const enabled) noexcept { mStencilBufferEnabled = enabled; }
+
+    bool isStencilBufferEnabled() const noexcept { return mStencilBufferEnabled; }
+
+    void setStereoscopicOptions(StereoscopicOptions const& options) noexcept;
+
+    utils::FixedCapacityVector<Camera const*> getDirectionalShadowCameras() const noexcept {
+        if (!mShadowMapManager) return {};
+        return mShadowMapManager->getDirectionalShadowCameras();
     }
 
     void setRenderTarget(FRenderTarget* renderTarget) noexcept {
@@ -206,7 +257,7 @@ public:
         return mMultiSampleAntiAliasingOptions.sampleCount;
     }
 
-    void setAntiAliasing(AntiAliasing type) noexcept {
+    void setAntiAliasing(AntiAliasing const type) noexcept {
         mAntiAliasing = type;
     }
 
@@ -232,6 +283,12 @@ public:
         return mScreenSpaceReflectionsOptions;
     }
 
+    void setGuardBandOptions(GuardBandOptions options) noexcept;
+
+    GuardBandOptions const& getGuardBandOptions() const noexcept {
+        return mGuardBandOptions;
+    }
+
     void setColorGrading(FColorGrading* colorGrading) noexcept {
         mColorGrading = colorGrading == nullptr ? mDefaultColorGrading : colorGrading;
     }
@@ -240,7 +297,7 @@ public:
         return mColorGrading;
     }
 
-    void setDithering(Dithering dithering) noexcept {
+    void setDithering(Dithering const dithering) noexcept {
         mDithering = dithering;
     }
 
@@ -248,16 +305,20 @@ public:
         return mDithering;
     }
 
+    const StereoscopicOptions& getStereoscopicOptions() const noexcept {
+        return mStereoscopicOptions;
+    }
+
     bool hasPostProcessPass() const noexcept {
         return mHasPostProcessPass;
     }
 
     math::float2 updateScale(FEngine& engine,
-            FrameInfo const& info,
+            details::FrameInfo const& info,
             Renderer::FrameRateOptions const& frameRateOptions,
             Renderer::DisplayInfo const& displayInfo) noexcept;
 
-    void setDynamicResolutionOptions(View::DynamicResolutionOptions const& options) noexcept;
+    void setDynamicResolutionOptions(DynamicResolutionOptions const& options) noexcept;
 
     DynamicResolutionOptions getDynamicResolutionOptions() const noexcept {
         return mDynamicResolution;
@@ -273,11 +334,11 @@ public:
 
     void setDynamicLightingOptions(float zLightNear, float zLightFar) noexcept;
 
-    void setPostProcessingEnabled(bool enabled) noexcept {
+    void setPostProcessingEnabled(bool const enabled) noexcept {
         mHasPostProcessPass = enabled;
     }
 
-    void setAmbientOcclusion(AmbientOcclusion ambientOcclusion) noexcept {
+    void setAmbientOcclusion(AmbientOcclusion const ambientOcclusion) noexcept {
         mAmbientOcclusionOptions.enabled = ambientOcclusion == AmbientOcclusion::SSAO;
     }
 
@@ -291,13 +352,11 @@ public:
         return mShadowType;
     }
 
-    void setShadowType(ShadowType shadow) noexcept {
+    void setShadowType(ShadowType const shadow) noexcept {
         mShadowType = shadow;
     }
 
-    void setVsmShadowOptions(VsmShadowOptions const& options) noexcept {
-        mVsmShadowOptions = options;
-    }
+    void setVsmShadowOptions(VsmShadowOptions options) noexcept;
 
     VsmShadowOptions getVsmShadowOptions() const noexcept {
         return mVsmShadowOptions;
@@ -337,7 +396,7 @@ public:
         return mVignetteOptions;
     }
 
-    void setBlendMode(BlendMode blendMode) noexcept {
+    void setBlendMode(BlendMode const blendMode) noexcept {
         mBlendMode = blendMode;
     }
 
@@ -361,8 +420,12 @@ public:
     FCamera& getCameraUser() noexcept { return *mCullingCamera; }
     void setCameraUser(FCamera* camera) noexcept { setCullingCamera(camera); }
 
+    bool hasCamera() const noexcept {
+        return mCullingCamera != nullptr;
+    }
+
     backend::Handle<backend::HwRenderTarget> getRenderTargetHandle() const noexcept {
-        backend::Handle<backend::HwRenderTarget> kEmptyHandle;
+        backend::Handle<backend::HwRenderTarget> const kEmptyHandle;
         return mRenderTarget == nullptr ? kEmptyHandle : mRenderTarget->getHwHandle();
     }
 
@@ -377,8 +440,7 @@ public:
     static void cullRenderables(utils::JobSystem& js, FScene::RenderableSoa& renderableData,
             Frustum const& frustum, size_t bit) noexcept;
 
-    PerViewUniforms const& getPerViewUniforms() const noexcept { return mPerViewUniforms; }
-    PerViewUniforms& getPerViewUniforms() noexcept { return mPerViewUniforms; }
+    ColorPassDescriptorSet& getColorPassDescriptorSet() noexcept { return mColorPassDescriptorSet; }
 
     // Returns the frame history FIFO. This is typically used by the FrameGraph to access
     // previous frame data.
@@ -390,27 +452,46 @@ public:
     // (e.g.: after the FrameGraph execution).
     void commitFrameHistory(FEngine& engine) noexcept;
 
+    // Clean-up the whole history, free all resources. This is typically called when the View is
+    // being terminated. Or we're changing Renderer.
+    void clearFrameHistory(FEngine& engine) noexcept;
+
     // create the picking query
-    View::PickingQuery& pick(uint32_t x, uint32_t y, backend::CallbackHandler* handler,
-            View::PickingQueryResultCallback callback) noexcept;
+    PickingQuery& pick(uint32_t x, uint32_t y, backend::CallbackHandler* handler,
+            PickingQueryResultCallback callback) noexcept;
 
     void executePickingQueries(backend::DriverApi& driver,
-            backend::RenderTargetHandle handle, float scale) noexcept;
+            backend::RenderTargetHandle handle, math::float2 scale) noexcept;
+
+    void setMaterialGlobal(uint32_t index, math::float4 const& value);
+
+    math::float4 getMaterialGlobal(uint32_t index) const;
+
+    utils::Entity getFogEntity() const noexcept {
+        return mFogEntity;
+    }
+
+    TypedUniformBuffer<PerViewUib>& getFrameUniforms() noexcept {
+        return mUniforms;
+    }
+
+    fgviewer::ViewHandle getViewHandle() const noexcept {
+        return mFrameGraphViewerViewHandle;
+    }
 
 private:
-
     struct FPickingQuery : public PickingQuery {
     private:
-        FPickingQuery(uint32_t x, uint32_t y,
+        FPickingQuery(uint32_t const x, uint32_t const y,
                 backend::CallbackHandler* handler,
-                View::PickingQueryResultCallback callback) noexcept
+                PickingQueryResultCallback const callback) noexcept
                 : PickingQuery{}, x(x), y(y), handler(handler), callback(callback) {}
         ~FPickingQuery() noexcept = default;
     public:
         // TODO: use a small pool
-        static FPickingQuery* get(uint32_t x, uint32_t y, backend::CallbackHandler* handler,
-                View::PickingQueryResultCallback callback) noexcept {
-            return new FPickingQuery(x, y, handler, callback);
+        static FPickingQuery* get(uint32_t const x, uint32_t const y, backend::CallbackHandler* handler,
+                PickingQueryResultCallback const callback) noexcept {
+            return new(std::nothrow) FPickingQuery(x, y, handler, callback);
         }
         static void put(FPickingQuery* pQuery) noexcept {
             delete pQuery;
@@ -420,7 +501,7 @@ private:
         uint32_t const x;
         uint32_t const y;
         backend::CallbackHandler* const handler;
-        View::PickingQueryResultCallback const callback;
+        PickingQueryResultCallback const callback;
         // picking query result
         PickingQueryResult result;
     };
@@ -428,7 +509,8 @@ private:
     void prepareVisibleRenderables(utils::JobSystem& js,
             Frustum const& frustum, FScene::RenderableSoa& renderableData) const noexcept;
 
-    static void prepareVisibleLights(FLightManager const& lcm, ArenaScope& rootArena,
+    static void prepareVisibleLights(FLightManager const& lcm,
+            utils::Slice<float> scratch,
             math::mat4f const& viewMatrix, Frustum const& frustum,
             FScene::LightSoa& lightData) noexcept;
 
@@ -441,39 +523,31 @@ private:
             Culler::result_type* visibleMask,
             size_t count);
 
-    void bindPerViewUniformsAndSamplers(FEngine::DriverApi& driver) const noexcept {
-        mPerViewUniforms.bind(driver);
-        driver.bindUniformBuffer(BindingPoints::LIGHTS, mLightUbh);
-        driver.bindUniformBuffer(BindingPoints::SHADOW, mShadowMapManager.getShadowUniformsHandle());
-        driver.bindUniformBuffer(BindingPoints::FROXEL_RECORDS, mFroxelizer.getRecordBuffer());
-    }
-
-    // Clean-up the whole history, free all resources. This is typically called when the View is
-    // being terminated.
-    void drainFrameHistory(FEngine& engine) noexcept;
-
     // we don't inline this one, because the function is quite large and there is not much to
     // gain from inlining.
     static FScene::RenderableSoa::iterator partition(
             FScene::RenderableSoa::iterator begin,
             FScene::RenderableSoa::iterator end,
-            uint8_t mask) noexcept;
+            Culler::result_type mask, Culler::result_type value) noexcept;
 
     // these are accessed in the render loop, keep together
     backend::Handle<backend::HwBufferObject> mLightUbh;
     backend::Handle<backend::HwBufferObject> mRenderableUbh;
+    DescriptorSet mCommonRenderableDescriptorSet;
 
     FScene* mScene = nullptr;
     // The camera set by the user, used for culling and viewing
-    FCamera* mCullingCamera = nullptr;
+    FCamera* /* UTILS_NONNULL */ mCullingCamera = nullptr; // FIXME: should always be non-null
     // The optional (debug) camera, used only for viewing
     FCamera* mViewingCamera = nullptr;
 
     mutable Froxelizer mFroxelizer;
+    utils::JobSystem::Job* mFroxelizerSync = nullptr;
 
     Viewport mViewport;
     bool mCulling = true;
     bool mFrontFaceWindingInverted = false;
+    bool mIsTransparentPickingEnabled = false;
 
     FRenderTarget* mRenderTarget = nullptr;
 
@@ -483,6 +557,7 @@ private:
     bool mShadowingEnabled = true;
     bool mScreenSpaceRefractionEnabled = true;
     bool mHasPostProcessPass = true;
+    bool mStencilBufferEnabled = false;
     AmbientOcclusionOptions mAmbientOcclusionOptions{};
     ShadowType mShadowType = ShadowType::PCF;
     VsmShadowOptions mVsmShadowOptions; // FIXME: this should probably be per-light
@@ -494,9 +569,13 @@ private:
     TemporalAntiAliasingOptions mTemporalAntiAliasingOptions;
     MultiSampleAntiAliasingOptions mMultiSampleAntiAliasingOptions;
     ScreenSpaceReflectionsOptions mScreenSpaceReflectionsOptions;
+    GuardBandOptions mGuardBandOptions;
+    StereoscopicOptions mStereoscopicOptions;
     BlendMode mBlendMode = BlendMode::OPAQUE;
     const FColorGrading* mColorGrading = nullptr;
     const FColorGrading* mDefaultColorGrading = nullptr;
+    utils::Entity mFogEntity{};
+    bool mIsStereoSupported : 1;
 
     PIDController mPidController;
     DynamicResolutionOptions mDynamicResolution;
@@ -505,7 +584,8 @@ private:
 
     RenderQuality mRenderQuality;
 
-    mutable PerViewUniforms mPerViewUniforms;
+    mutable TypedUniformBuffer<PerViewUib> mUniforms;
+    mutable ColorPassDescriptorSet mColorPassDescriptorSet;
 
     mutable FrameHistory mFrameHistory{};
 
@@ -518,19 +598,33 @@ private:
     Range mVisibleDirectionalShadowCasters;
     Range mSpotLightShadowCasters;
     uint32_t mRenderableUBOSize = 0;
-    mutable bool mHasDirectionalLight = false;
+    mutable bool mHasDirectionalLighting = false;
     mutable bool mHasDynamicLighting = false;
     mutable bool mHasShadowing = false;
     mutable bool mNeedsShadowMap = false;
 
-    ShadowMapManager mShadowMapManager;
+    std::unique_ptr<ShadowMapManager> mShadowMapManager;
+
+    std::array<math::float4, 4> mMaterialGlobals = {{
+                                                            { 0, 0, 0, 1 },
+                                                            { 0, 0, 0, 1 },
+                                                            { 0, 0, 0, 1 },
+                                                            { 0, 0, 0, 1 },
+                                                    }};
+
+    fgviewer::ViewHandle mFrameGraphViewerViewHandle;
 
 #ifndef NDEBUG
-    std::array<DebugRegistry::FrameHistory, 5*60> mDebugFrameHistory;
+    struct DebugState {
+        std::unique_ptr<std::array<DebugRegistry::FrameHistory, 5*60>> debugFrameHistory{};
+        bool owner = false;
+        bool active = false;
+    };
+    std::shared_ptr<DebugState> mDebugState{ new DebugState };
 #endif
 };
 
-FILAMENT_UPCAST(View)
+FILAMENT_DOWNCAST(View)
 
 } // namespace filament
 

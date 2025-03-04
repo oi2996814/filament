@@ -2,7 +2,7 @@
 set -e
 
 # Host tools required by Android, WebGL, and iOS builds
-MOBILE_HOST_TOOLS="matc resgen cmgen filamesh"
+MOBILE_HOST_TOOLS="matc resgen cmgen filamesh uberz"
 WEB_HOST_TOOLS="${MOBILE_HOST_TOOLS} mipgen filamesh"
 
 function print_help {
@@ -22,9 +22,13 @@ function print_help {
     echo "        All (and only) git-ignored files under android/ are deleted."
     echo "        This is sometimes needed instead of -c (which still misses some clean steps)."
     echo "    -d"
-    echo "        Enable matdbg and disable material optimization."
+    echo "        Enable matdbg."
+    echo "    -t"
+    echo "        Enable fgviewer."
     echo "    -f"
     echo "        Always invoke CMake before incremental builds."
+    echo "    -g"
+    echo "        Disable material optimization."
     echo "    -i"
     echo "        Install build output"
     echo "    -m"
@@ -42,8 +46,8 @@ function print_help {
     echo "        Exclude Vulkan support from the Android build."
     echo "    -s"
     echo "        Add iOS simulator support to the iOS build."
-    echo "    -t"
-    echo "        Enable SwiftShader support for Vulkan in desktop builds."
+    echo "    -e"
+    echo "        Enable EGL on Linux support for desktop builds."
     echo "    -l"
     echo "        Build arm64/x86_64 universal libraries."
     echo "        For iOS, this builds universal binaries for devices and the simulator (implies -s)."
@@ -54,6 +58,20 @@ function print_help {
     echo "        When building for Android, also build select sample APKs."
     echo "        sampleN is an Android sample, e.g., sample-gltf-viewer."
     echo "        This automatically performs a partial desktop build and install."
+    echo "    -b"
+    echo "        Enable Address and Undefined Behavior Sanitizers (asan/ubsan) for debugging."
+    echo "        This is only for the desktop build."
+    echo "    -x value"
+    echo "        Define a preprocessor flag FILAMENT_BACKEND_DEBUG_FLAG with [value]. This is useful for"
+    echo "        enabling debug paths in the backend from the build script. For example, make a"
+    echo "        systrace-enabled build without directly changing #defines. Remember to add -f when"
+    echo "        changing this option."
+    echo "    -X osmesa_path"
+    echo "        Indicates a path to a completed OSMesa build. OSMesa is used to create an offscreen GL"
+    echo "        context for software rasterization"
+    echo "    -S type"
+    echo "        Enable stereoscopic rendering where type is one of [instanced|multiview]. This is only"
+    echo "        meant for building the samples."
     echo ""
     echo "Build types:"
     echo "    release"
@@ -83,8 +101,8 @@ function print_help {
     echo "    Desktop matc target, release build:"
     echo "        \$ ./$self_name release matc"
     echo ""
-    echo "    Build gltf_viewer then immediately run it with no arguments:"
-    echo "        \$ ./$self_name release run_gltf_viewer"
+    echo "    Build gltf_viewer:"
+    echo "        \$ ./$self_name release gltf_viewer"
     echo ""
  }
 
@@ -104,6 +122,27 @@ function print_matdbg_help {
     echo ""
     echo "2) The port number is hardcoded to 8081 so you will need to do:"
     echo "       adb forward tcp:8081 tcp:8081"
+    echo ""
+    echo "3) Be sure to enable INTERNET permission in your app's manifest file."
+    echo ""
+}
+
+function print_fgviewer_help {
+    echo "fgviewer is enabled in the build, but some extra steps are needed."
+    echo ""
+    echo "FOR DESKTOP BUILDS:"
+    echo ""
+    echo "Please set the port environment variable before launching. e.g., on macOS do:"
+    echo "   export FILAMENT_FGVIEWER_PORT=8085"
+    echo ""
+    echo "FOR ANDROID BUILDS:"
+    echo ""
+    echo "1) For Android Studio builds, make sure to set:"
+    echo "       -Pcom.google.android.filament.fgviewer"
+    echo "   option in Preferences > Build > Compiler > Command line options."
+    echo ""
+    echo "2) The port number is hardcoded to 8085 so you will need to do:"
+    echo "       adb forward tcp:8085 tcp:8085"
     echo ""
     echo "3) Be sure to enable INTERNET permission in your app's manifest file."
     echo ""
@@ -153,10 +192,22 @@ INSTALL_COMMAND=
 VULKAN_ANDROID_OPTION="-DFILAMENT_SUPPORTS_VULKAN=ON"
 VULKAN_ANDROID_GRADLE_OPTION=""
 
-SWIFTSHADER_OPTION="-DFILAMENT_USE_SWIFTSHADER=OFF"
+EGL_ON_LINUX_OPTION="-DFILAMENT_SUPPORTS_EGL_ON_LINUX=OFF"
 
 MATDBG_OPTION="-DFILAMENT_ENABLE_MATDBG=OFF"
+FGVIEWER_OPTION="-DFILAMENT_ENABLE_FGVIEWER=OFF"
 MATDBG_GRADLE_OPTION=""
+
+MATOPT_OPTION=""
+MATOPT_GRADLE_OPTION=""
+
+ASAN_UBSAN_OPTION=""
+
+BACKEND_DEBUG_FLAG_OPTION=""
+
+STEREOSCOPIC_OPTION=""
+
+OSMESA_OPTION=""
 
 IOS_BUILD_SIMULATOR=false
 BUILD_UNIVERSAL_LIBRARIES=false
@@ -177,6 +228,7 @@ function build_clean {
     rm -Rf android/filamat-android/build android/filamat-android/.externalNativeBuild android/filamat-android/.cxx
     rm -Rf android/gltfio-android/build android/gltfio-android/.externalNativeBuild android/gltfio-android/.cxx
     rm -Rf android/filament-utils-android/build android/filament-utils-android/.externalNativeBuild android/filament-utils-android/.cxx
+    rm -f compile_commands.json
 }
 
 function build_clean_aggressive {
@@ -196,13 +248,10 @@ function build_desktop_target {
     echo "Building ${lc_target} in out/cmake-${lc_target}..."
     mkdir -p "out/cmake-${lc_target}"
 
-    cd "out/cmake-${lc_target}"
+    pushd "out/cmake-${lc_target}" > /dev/null
 
-    # On macOS, set the deployment target to 10.15.
     local lc_name=$(echo "${UNAME}" | tr '[:upper:]' '[:lower:]')
     if [[ "${lc_name}" == "darwin" ]]; then
-        local deployment_target="-DCMAKE_OSX_DEPLOYMENT_TARGET=10.15"
-
         if [[ "${BUILD_UNIVERSAL_LIBRARIES}" == "true" ]]; then
             local architectures="-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
         fi
@@ -214,11 +263,18 @@ function build_desktop_target {
             -DIMPORT_EXECUTABLES_DIR=out \
             -DCMAKE_BUILD_TYPE="$1" \
             -DCMAKE_INSTALL_PREFIX="../${lc_target}/filament" \
-            ${SWIFTSHADER_OPTION} \
+            ${EGL_ON_LINUX_OPTION} \
+            ${FGVIEWER_OPTION} \
             ${MATDBG_OPTION} \
-            ${deployment_target} \
+            ${MATOPT_OPTION} \
+            ${ASAN_UBSAN_OPTION} \
+            ${BACKEND_DEBUG_FLAG_OPTION} \
+            ${STEREOSCOPIC_OPTION} \
+            ${OSMESA_OPTION} \
             ${architectures} \
             ../..
+        ln -sf "out/cmake-${lc_target}/compile_commands.json" \
+           ../../compile_commands.json
     fi
     ${BUILD_COMMAND} ${build_targets}
 
@@ -230,12 +286,13 @@ function build_desktop_target {
     if [[ -d "../${lc_target}/filament" ]]; then
         if [[ "${ISSUE_ARCHIVES}" == "true" ]]; then
             echo "Generating out/filament-${lc_target}-${LC_UNAME}.tgz..."
-            cd "../${lc_target}"
+            pushd "../${lc_target}" > /dev/null
             tar -czvf "../filament-${lc_target}-${LC_UNAME}.tgz" filament
+            popd > /dev/null
         fi
     fi
 
-    cd ../..
+    popd > /dev/null
 }
 
 function build_desktop {
@@ -253,7 +310,7 @@ function build_webgl_with_target {
 
     echo "Building WebGL ${lc_target}..."
     mkdir -p "out/cmake-webgl-${lc_target}"
-    cd "out/cmake-webgl-${lc_target}"
+    pushd "out/cmake-webgl-${lc_target}" > /dev/null
 
     if [[ ! "${BUILD_TARGETS}" ]]; then
         BUILD_TARGETS=${BUILD_CUSTOM_TARGETS}
@@ -272,7 +329,10 @@ function build_webgl_with_target {
             -DCMAKE_BUILD_TYPE="$1" \
             -DCMAKE_INSTALL_PREFIX="../webgl-${lc_target}/filament" \
             -DWEBGL=1 \
+            ${BACKEND_DEBUG_FLAG_OPTION} \
             ../..
+        ln -sf "out/cmake-webgl-${lc_target}/compile_commands.json" \
+           ../../compile_commands.json
         ${BUILD_COMMAND} ${BUILD_TARGETS}
         )
     fi
@@ -290,17 +350,17 @@ function build_webgl_with_target {
 
         if [[ "${ISSUE_ARCHIVES}" == "true" ]]; then
             echo "Generating out/filament-${lc_target}-web.tgz..."
-            cd web/filament-js
+            pushd web/filament-js > /dev/null
             tar -cvf "../../../filament-${lc_target}-web.tar" filament.js
             tar -rvf "../../../filament-${lc_target}-web.tar" filament.wasm
             tar -rvf "../../../filament-${lc_target}-web.tar" filament.d.ts
-            cd -
+            popd > /dev/null
             gzip -c "../filament-${lc_target}-web.tar" > "../filament-${lc_target}-web.tgz"
             rm "../filament-${lc_target}-web.tar"
         fi
     fi
 
-    cd ../..
+    popd > /dev/null
 }
 
 function build_webgl {
@@ -331,7 +391,7 @@ function build_android_target {
     echo "Building Android ${lc_target} (${arch})..."
     mkdir -p "out/cmake-android-${lc_target}-${arch}"
 
-    cd "out/cmake-android-${lc_target}-${arch}"
+    pushd "out/cmake-android-${lc_target}-${arch}" > /dev/null
 
     if [[ ! -d "CMakeFiles" ]] || [[ "${ISSUE_CMAKE_ALWAYS}" == "true" ]]; then
         cmake \
@@ -341,15 +401,21 @@ function build_android_target {
             -DFILAMENT_NDK_VERSION="${FILAMENT_NDK_VERSION}" \
             -DCMAKE_INSTALL_PREFIX="../android-${lc_target}/filament" \
             -DCMAKE_TOOLCHAIN_FILE="../../build/toolchain-${arch}-linux-android.cmake" \
+            ${FGVIEWER_OPTION} \
             ${MATDBG_OPTION} \
+            ${MATOPT_OPTION} \
             ${VULKAN_ANDROID_OPTION} \
+            ${BACKEND_DEBUG_FLAG_OPTION} \
+            ${STEREOSCOPIC_OPTION} \
             ../..
+        ln -sf "out/cmake-android-${lc_target}-${arch}/compile_commands.json" \
+           ../../compile_commands.json
     fi
 
     # We must always install Android libraries to build the AAR
     ${BUILD_COMMAND} install
 
-    cd ../..
+    popd > /dev/null
 }
 
 function build_android_arch {
@@ -370,9 +436,9 @@ function archive_android {
     if [[ -d "out/android-${lc_target}/filament" ]]; then
         if [[ "${ISSUE_ARCHIVES}" == "true" ]]; then
             echo "Generating out/filament-android-${lc_target}-${LC_UNAME}.tgz..."
-            cd "out/android-${lc_target}"
+            pushd "out/android-${lc_target}" > /dev/null
             tar -czvf "../filament-android-${lc_target}-${LC_UNAME}.tgz" filament
-            cd ../..
+            popd > /dev/null
         fi
     fi
 }
@@ -450,7 +516,7 @@ function build_android {
         archive_android "Release"
     fi
 
-    cd android
+    pushd android > /dev/null
 
     if [[ "${ISSUE_DEBUG_BUILD}" == "true" ]]; then
         ./gradlew \
@@ -458,6 +524,7 @@ function build_android {
             -Pcom.google.android.filament.abis=${ABI_GRADLE_OPTION} \
             ${VULKAN_ANDROID_GRADLE_OPTION} \
             ${MATDBG_GRADLE_OPTION} \
+            ${MATOPT_GRADLE_OPTION} \
             :filament-android:assembleDebug \
             :gltfio-android:assembleDebug \
             :filament-utils-android:assembleDebug
@@ -472,21 +539,20 @@ function build_android {
                 ./gradlew \
                     -Pcom.google.android.filament.dist-dir=../out/android-debug/filament \
                     -Pcom.google.android.filament.abis=${ABI_GRADLE_OPTION} \
+                    ${MATOPT_GRADLE_OPTION} \
                     :samples:${sample}:assembleDebug
             done
         fi
 
         if [[ "${INSTALL_COMMAND}" ]]; then
             echo "Installing out/filamat-android-debug.aar..."
-            cp filamat-android/build/outputs/aar/filamat-android-lite-debug.aar ../out/
-            cp filamat-android/build/outputs/aar/filamat-android-full-debug.aar ../out/filamat-android-debug.aar
+            cp filamat-android/build/outputs/aar/filamat-android-debug.aar ../out/filamat-android-debug.aar
 
             echo "Installing out/filament-android-debug.aar..."
             cp filament-android/build/outputs/aar/filament-android-debug.aar ../out/
 
             echo "Installing out/gltfio-android-debug.aar..."
-            cp gltfio-android/build/outputs/aar/gltfio-android-lite-debug.aar ../out/
-            cp gltfio-android/build/outputs/aar/gltfio-android-full-debug.aar ../out/gltfio-android-debug.aar
+            cp gltfio-android/build/outputs/aar/gltfio-android-debug.aar ../out/gltfio-android-debug.aar
 
             echo "Installing out/filament-utils-android-debug.aar..."
             cp filament-utils-android/build/outputs/aar/filament-utils-android-debug.aar ../out/filament-utils-android-debug.aar
@@ -494,7 +560,7 @@ function build_android {
             if [[ "${BUILD_ANDROID_SAMPLES}" == "true" ]]; then
                 for sample in ${ANDROID_SAMPLES}; do
                     echo "Installing out/${sample}-debug.apk"
-                    cp samples/${sample}/build/outputs/apk/debug/${sample}-debug-unsigned.apk \
+                    cp samples/${sample}/build/outputs/apk/debug/${sample}-debug.apk \
                         ../out/${sample}-debug.apk
                 done
             fi
@@ -507,6 +573,7 @@ function build_android {
             -Pcom.google.android.filament.abis=${ABI_GRADLE_OPTION} \
             ${VULKAN_ANDROID_GRADLE_OPTION} \
             ${MATDBG_GRADLE_OPTION} \
+            ${MATOPT_GRADLE_OPTION} \
             :filament-android:assembleRelease \
             :gltfio-android:assembleRelease \
             :filament-utils-android:assembleRelease
@@ -521,21 +588,20 @@ function build_android {
                 ./gradlew \
                     -Pcom.google.android.filament.dist-dir=../out/android-release/filament \
                     -Pcom.google.android.filament.abis=${ABI_GRADLE_OPTION} \
+                    ${MATOPT_GRADLE_OPTION} \
                     :samples:${sample}:assembleRelease
             done
         fi
 
         if [[ "${INSTALL_COMMAND}" ]]; then
             echo "Installing out/filamat-android-release.aar..."
-            cp filamat-android/build/outputs/aar/filamat-android-lite-release.aar ../out/
-            cp filamat-android/build/outputs/aar/filamat-android-full-release.aar ../out/filamat-android-release.aar
+            cp filamat-android/build/outputs/aar/filamat-android-release.aar ../out/filamat-android-release.aar
 
             echo "Installing out/filament-android-release.aar..."
             cp filament-android/build/outputs/aar/filament-android-release.aar ../out/
 
             echo "Installing out/gltfio-android-release.aar..."
-            cp gltfio-android/build/outputs/aar/gltfio-android-lite-release.aar ../out/
-            cp gltfio-android/build/outputs/aar/gltfio-android-full-release.aar ../out/gltfio-android-release.aar
+            cp gltfio-android/build/outputs/aar/gltfio-android-release.aar ../out/gltfio-android-release.aar
 
             echo "Installing out/filament-utils-android-release.aar..."
             cp filament-utils-android/build/outputs/aar/filament-utils-android-release.aar ../out/filament-utils-android-release.aar
@@ -550,7 +616,7 @@ function build_android {
         fi
     fi
 
-    cd ..
+    popd > /dev/null
 }
 
 function build_ios_target {
@@ -561,7 +627,7 @@ function build_ios_target {
     echo "Building iOS ${lc_target} (${arch}) for ${platform}..."
     mkdir -p "out/cmake-ios-${lc_target}-${arch}"
 
-    cd "out/cmake-ios-${lc_target}-${arch}"
+    pushd "out/cmake-ios-${lc_target}-${arch}" > /dev/null
 
     if [[ ! -d "CMakeFiles" ]] || [[ "${ISSUE_CMAKE_ALWAYS}" == "true" ]]; then
         cmake \
@@ -573,8 +639,13 @@ function build_ios_target {
             -DPLATFORM_NAME="${platform}" \
             -DIOS=1 \
             -DCMAKE_TOOLCHAIN_FILE=../../third_party/clang/iOS.cmake \
+            ${FGVIEWER_OPTION} \
             ${MATDBG_OPTION} \
+            ${MATOPT_OPTION} \
+            ${STEREOSCOPIC_OPTION} \
             ../..
+        ln -sf "out/cmake-ios-${lc_target}-${arch}/compile_commands.json" \
+           ../../compile_commands.json
     fi
 
     ${BUILD_COMMAND}
@@ -584,7 +655,7 @@ function build_ios_target {
         ${BUILD_COMMAND} ${INSTALL_COMMAND}
     fi
 
-    cd ../..
+    popd > /dev/null
 }
 
 function archive_ios {
@@ -593,9 +664,9 @@ function archive_ios {
     if [[ -d "out/ios-${lc_target}/filament" ]]; then
         if [[ "${ISSUE_ARCHIVES}" == "true" ]]; then
             echo "Generating out/filament-${lc_target}-ios.tgz..."
-            cd "out/ios-${lc_target}"
+            pushd "out/ios-${lc_target}" > /dev/null
             tar -czvf "../filament-${lc_target}-ios.tgz" filament
-            cd ../..
+            popd > /dev/null
         fi
     fi
 }
@@ -654,14 +725,14 @@ function build_web_docs {
 
     mkdir -p out/web-docs
     cp -f docs/web-docs-package.json out/web-docs/package.json
-    cd out/web-docs
+    pushd out/web-docs > /dev/null
 
     npm install > /dev/null
 
     # Generate documents
     npx markdeep-rasterizer ../../docs/Filament.md.html ../../docs/Materials.md.html  ../../docs/
 
-    cd ../..
+    popd > /dev/null
 }
 
 function validate_build_command {
@@ -705,6 +776,13 @@ function validate_build_command {
             exit 1
         fi
     fi
+
+    # Make sure FILAMENT_BACKEND_DEBUG_FLAG is only meant for debug builds
+    if [[ "${ISSUE_DEBUG_BUILD}" != "true" ]] && [[ ! -z "${BACKEND_DEBUG_FLAG_OPTION}" ]]; then
+        echo "Error: cannot specify FILAMENT_BACKEND_DEBUG_FLAG in non-debug build"
+        exit 1
+    fi
+
     set -e
 }
 
@@ -734,15 +812,28 @@ function run_tests {
     fi
 }
 
+function check_debug_release_build {
+    if [[ "${ISSUE_DEBUG_BUILD}" == "true" || \
+          "${ISSUE_RELEASE_BUILD}" == "true" || \
+          "${ISSUE_CLEAN}" == "true" || \
+          "${ISSUE_WEB_DOCS}" == "true" ]]; then
+        "$@";
+    else
+        echo "You must declare a debug or release target for $@ builds."
+        echo ""
+        exit 1
+    fi
+}
+
 # Beginning of the script
 
 pushd "$(dirname "$0")" > /dev/null
 
-while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
+while getopts ":hacCfgijmp:q:uvslwedtk:bx:S:X:" opt; do
     case ${opt} in
         h)
             print_help
-            exit 1
+            exit 0
             ;;
         a)
             ISSUE_ARCHIVES=true
@@ -756,11 +847,20 @@ while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
             ;;
         d)
             PRINT_MATDBG_HELP=true
-            MATDBG_OPTION="-DFILAMENT_ENABLE_MATDBG=ON, -DFILAMENT_DISABLE_MATOPT=ON, -DFILAMENT_BUILD_FILAMAT=ON"
+            MATDBG_OPTION="-DFILAMENT_ENABLE_MATDBG=ON, -DFILAMENT_BUILD_FILAMAT=ON"
             MATDBG_GRADLE_OPTION="-Pcom.google.android.filament.matdbg"
+            ;;
+        t)
+            PRINT_FGVIEWER_HELP=true
+            FGVIEWER_OPTION="-DFILAMENT_ENABLE_FGVIEWER=ON"
+            FGVIEWER_GRADLE_OPTION="-Pcom.google.android.filament.fgviewer"
             ;;
         f)
             ISSUE_CMAKE_ALWAYS=true
+            ;;
+        g)
+            MATOPT_OPTION="-DFILAMENT_DISABLE_MATOPT=ON"
+            MATOPT_GRADLE_OPTION="-Pcom.google.android.filament.matnopt"
             ;;
         i)
             INSTALL_COMMAND=install
@@ -774,7 +874,7 @@ while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
             platforms=$(echo "${OPTARG}" | tr ',' '\n')
             for platform in ${platforms}
             do
-                case ${platform} in
+                case $(echo "${platform}" | tr '[:upper:]' '[:lower:]') in
                     desktop)
                         ISSUE_DESKTOP_BUILD=true
                     ;;
@@ -793,6 +893,12 @@ while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
                         ISSUE_DESKTOP_BUILD=true
                         ISSUE_WEBGL_BUILD=false
                     ;;
+                    *)
+                        echo "Unknown platform ${platform}"
+                        echo "Platform must be one of [desktop|android|ios|webgl|all]"
+                        echo ""
+                        exit 1
+                    ;;
                 esac
             done
             ;;
@@ -805,7 +911,7 @@ while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
             abis=$(echo "${OPTARG}" | tr ',' '\n')
             for abi in ${abis}
             do
-                case ${abi} in
+                case $(echo "${abi}" | tr '[:upper:]' '[:lower:]') in
                     armeabi-v7a)
                         ABI_ARMEABI_V7A=true
                     ;;
@@ -824,6 +930,12 @@ while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
                         ABI_X86=true
                         ABI_X86_64=true
                     ;;
+                    *)
+                        echo "Unknown abi ${abi}"
+                        echo "ABI must be one of [armeabi-v7a|arm64-v8a|x86|x86_64|all]"
+                        echo ""
+                        exit 1
+                    ;;
                 esac
             done
             ;;
@@ -841,9 +953,9 @@ while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
             IOS_BUILD_SIMULATOR=true
             echo "iOS simulator support enabled."
             ;;
-        t)
-            SWIFTSHADER_OPTION="-DFILAMENT_USE_SWIFTSHADER=ON"
-            echo "SwiftShader support enabled."
+        e)
+            EGL_ON_LINUX_OPTION="-DFILAMENT_SUPPORTS_EGL_ON_LINUX=ON -DFILAMENT_SKIP_SDL2=ON -DFILAMENT_SKIP_SAMPLES=ON"
+            echo "EGL on Linux support enabled; skipping SDL2."
             ;;
         l)
             IOS_BUILD_SIMULATOR=true
@@ -856,6 +968,27 @@ while getopts ":hacCfijmp:q:uvslwtdk:" opt; do
         k)
             BUILD_ANDROID_SAMPLES=true
             ANDROID_SAMPLES=$(echo "${OPTARG}" | tr ',' '\n')
+            ;;
+        b)  ASAN_UBSAN_OPTION="-DFILAMENT_ENABLE_ASAN_UBSAN=ON"
+            echo "Enabled ASAN/UBSAN"
+            ;;
+        x)  BACKEND_DEBUG_FLAG_OPTION="-DFILAMENT_BACKEND_DEBUG_FLAG=${OPTARG}"
+            ;;
+        S)  case $(echo "${OPTARG}" | tr '[:upper:]' '[:lower:]') in
+                instanced)
+                    STEREOSCOPIC_OPTION="-DFILAMENT_SAMPLES_STEREO_TYPE=instanced"
+                    ;;
+                multiview)
+                    STEREOSCOPIC_OPTION="-DFILAMENT_SAMPLES_STEREO_TYPE=multiview"
+                    ;;
+                *)
+                    echo "Unknown stereoscopic type ${OPTARG}"
+                    echo "Type must be one of [instanced|multiview]"
+                    echo ""
+                    exit 1
+            esac
+            ;;
+        X)  OSMESA_OPTION="-DFILAMENT_OSMESA_PATH=${OPTARG}"
             ;;
         \?)
             echo "Invalid option: -${OPTARG}" >&2
@@ -880,9 +1013,9 @@ fi
 shift $((OPTIND - 1))
 
 for arg; do
-    if [[ "${arg}" == "release" ]]; then
+    if [[ $(echo "${arg}" | tr '[:upper:]' '[:lower:]') == "release" ]]; then
         ISSUE_RELEASE_BUILD=true
-    elif [[ "${arg}" == "debug" ]]; then
+    elif [[ $(echo "${arg}" | tr '[:upper:]' '[:lower:]') == "debug" ]]; then
         ISSUE_DEBUG_BUILD=true
     else
         BUILD_CUSTOM_TARGETS="${BUILD_CUSTOM_TARGETS} ${arg}"
@@ -900,19 +1033,19 @@ if [[ "${ISSUE_CLEAN_AGGRESSIVE}" == "true" ]]; then
 fi
 
 if [[ "${ISSUE_DESKTOP_BUILD}" == "true" ]]; then
-    build_desktop
+    check_debug_release_build build_desktop
 fi
 
 if [[ "${ISSUE_ANDROID_BUILD}" == "true" ]]; then
-    build_android
+    check_debug_release_build build_android
 fi
 
 if [[ "${ISSUE_IOS_BUILD}" == "true" ]]; then
-    build_ios
+    check_debug_release_build build_ios
 fi
 
 if [[ "${ISSUE_WEBGL_BUILD}" == "true" ]]; then
-    build_webgl
+    check_debug_release_build build_webgl
 fi
 
 if [[ "${ISSUE_WEB_DOCS}" == "true" ]]; then
@@ -925,4 +1058,8 @@ fi
 
 if [[ "${PRINT_MATDBG_HELP}" == "true" ]]; then
     print_matdbg_help
+fi
+
+if [[ "${PRINT_FGVIEWER_HELP}" == "true" ]]; then
+    print_fgviewer_help
 fi

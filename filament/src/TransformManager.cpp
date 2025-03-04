@@ -22,95 +22,111 @@ namespace filament {
 
 using namespace math;
 
-void TransformManager::create(Entity entity, Instance parent, const mat4f& worldTransform) {
-    upcast(this)->create(entity, parent, worldTransform);
+bool TransformManager::hasComponent(Entity const e) const noexcept {
+    return downcast(this)->hasComponent(e);
 }
 
-void TransformManager::create(Entity entity, Instance parent, const mat4& worldTransform) {
-    upcast(this)->create(entity, parent, worldTransform);
+size_t TransformManager::getComponentCount() const noexcept {
+    return downcast(this)->getComponentCount();
 }
 
-void TransformManager::create(Entity entity, Instance parent) {
-    upcast(this)->create(entity, parent, mat4f{});
+bool TransformManager::empty() const noexcept {
+    return downcast(this)->empty();
 }
 
-void TransformManager::destroy(Entity e) noexcept {
-    upcast(this)->destroy(e);
+Entity TransformManager::getEntity(Instance const i) const noexcept {
+    return downcast(this)->getEntity(i);
 }
 
-bool TransformManager::hasComponent(Entity e) const noexcept {
-    return upcast(this)->hasComponent(e);
+Entity const* TransformManager::getEntities() const noexcept {
+    return downcast(this)->getEntities();
 }
 
-TransformManager::Instance TransformManager::getInstance(Entity e) const noexcept {
-    return upcast(this)->getInstance(e);
+TransformManager::Instance TransformManager::getInstance(Entity const e) const noexcept {
+    return downcast(this)->getInstance(e);
 }
 
-void TransformManager::setTransform(Instance ci, const mat4f& model) noexcept {
-    upcast(this)->setTransform(ci, model);
+void TransformManager::create(Entity const entity, Instance const parent, const mat4f& worldTransform) {
+    downcast(this)->create(entity, parent, worldTransform);
 }
 
-void TransformManager::setTransform(Instance ci, const mat4& model) noexcept {
-    upcast(this)->setTransform(ci, model);
+void TransformManager::create(Entity const entity, Instance const parent, const mat4& worldTransform) {
+    downcast(this)->create(entity, parent, worldTransform);
 }
 
-const mat4f& TransformManager::getTransform(Instance ci) const noexcept {
-    return upcast(this)->getTransform(ci);
+void TransformManager::create(Entity const entity, Instance const parent) {
+    downcast(this)->create(entity, parent, mat4f{});
 }
 
-const mat4 TransformManager::getTransformAccurate(Instance ci) const noexcept {
-    return upcast(this)->getTransformAccurate(ci);
+void TransformManager::destroy(Entity const e) noexcept {
+    downcast(this)->destroy(e);
 }
 
-const mat4f& TransformManager::getWorldTransform(Instance ci) const noexcept {
-    return upcast(this)->getWorldTransform(ci);
+void TransformManager::setTransform(Instance const ci, const mat4f& model) noexcept {
+    downcast(this)->setTransform(ci, model);
 }
 
-const mat4 TransformManager::getWorldTransformAccurate(Instance ci) const noexcept {
-    return upcast(this)->getWorldTransformAccurate(ci);
+void TransformManager::setTransform(Instance const ci, const mat4& model) noexcept {
+    downcast(this)->setTransform(ci, model);
 }
 
-void TransformManager::setParent(Instance i, Instance newParent) noexcept {
-    upcast(this)->setParent(i, newParent);
+const mat4f& TransformManager::getTransform(Instance const ci) const noexcept {
+    return downcast(this)->getTransform(ci);
 }
 
-utils::Entity TransformManager::getParent(Instance i) const noexcept {
-    return upcast(this)->getParent(i);
+mat4 TransformManager::getTransformAccurate(Instance const ci) const noexcept {
+    return downcast(this)->getTransformAccurate(ci);
 }
 
-size_t TransformManager::getChildCount(Instance i) const noexcept {
-    return upcast(this)->getChildCount(i);
+const mat4f& TransformManager::getWorldTransform(Instance const ci) const noexcept {
+    return downcast(this)->getWorldTransform(ci);
 }
 
-size_t TransformManager::getChildren(Instance i, utils::Entity* children,
-        size_t count) const noexcept {
-    return upcast(this)->getChildren(i, children, count);
+mat4 TransformManager::getWorldTransformAccurate(Instance const ci) const noexcept {
+    return downcast(this)->getWorldTransformAccurate(ci);
+}
+
+void TransformManager::setParent(Instance const i, Instance const newParent) noexcept {
+    downcast(this)->setParent(i, newParent);
+}
+
+Entity TransformManager::getParent(Instance const i) const noexcept {
+    return downcast(this)->getParent(i);
+}
+
+size_t TransformManager::getChildCount(Instance const i) const noexcept {
+    return downcast(this)->getChildCount(i);
+}
+
+size_t TransformManager::getChildren(Instance const i, Entity* children,
+        size_t const count) const noexcept {
+    return downcast(this)->getChildren(i, children, count);
 }
 
 void TransformManager::openLocalTransformTransaction() noexcept {
-    upcast(this)->openLocalTransformTransaction();
+    downcast(this)->openLocalTransformTransaction();
 }
 
 void TransformManager::commitLocalTransformTransaction() noexcept {
-    upcast(this)->commitLocalTransformTransaction();
+    downcast(this)->commitLocalTransformTransaction();
 }
 
 TransformManager::children_iterator TransformManager::getChildrenBegin(
-        TransformManager::Instance parent) const noexcept {
-    return upcast(this)->getChildrenBegin(parent);
+        Instance const parent) const noexcept {
+    return downcast(this)->getChildrenBegin(parent);
 }
 
 TransformManager::children_iterator TransformManager::getChildrenEnd(
-        TransformManager::Instance parent) const noexcept {
-    return upcast(this)->getChildrenEnd(parent);
+        Instance const parent) const noexcept {
+    return downcast(this)->getChildrenEnd(parent);
 }
 
-void TransformManager::setAccurateTranslationsEnabled(bool enable) noexcept {
-    upcast(this)->setAccurateTranslationsEnabled(enable);
+void TransformManager::setAccurateTranslationsEnabled(bool const enable) noexcept {
+    downcast(this)->setAccurateTranslationsEnabled(enable);
 }
 
 bool TransformManager::isAccurateTranslationsEnabled() const noexcept {
-    return upcast(this)->isAccurateTranslationsEnabled();;
+    return downcast(this)->isAccurateTranslationsEnabled();
 }
 
 } // namespace filament

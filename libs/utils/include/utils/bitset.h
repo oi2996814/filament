@@ -26,6 +26,7 @@
 #include <stdint.h>
 
 #include <algorithm> // for std::fill
+#include <iterator>
 #include <type_traits>
 
 #if defined(__ARM_NEON)
@@ -44,8 +45,8 @@ namespace utils {
  */
 
 template<typename T, size_t N = 1,
-        typename = typename std::enable_if<std::is_integral<T>::value &&
-                                           std::is_unsigned<T>::value>::type>
+        typename = std::enable_if_t<std::is_integral_v<T> &&
+                                           std::is_unsigned_v<T>>>
 class UTILS_PUBLIC bitset {
     T storage[N];
 
@@ -57,6 +58,11 @@ public:
 
     bitset() noexcept {
         std::fill(std::begin(storage), std::end(storage), 0);
+    }
+
+    template<typename U, typename = typename std::enable_if_t<N == 1, U>>
+    explicit bitset(U value) noexcept {
+        storage[0] = value;
     }
 
     T getBitsAt(size_t n) const noexcept {
@@ -93,6 +99,8 @@ public:
 
     size_t size() const noexcept { return N * BITS_PER_WORD; }
 
+    bool empty() const noexcept { return none(); }
+
     bool test(size_t bit) const noexcept { return operator[](bit); }
 
     void set(size_t b) noexcept {
@@ -116,9 +124,12 @@ public:
         storage[b / BITS_PER_WORD] ^= T(1) << (b % BITS_PER_WORD);
     }
 
-
     void reset() noexcept {
         std::fill(std::begin(storage), std::end(storage), 0);
+    }
+
+    void clear() noexcept {
+        reset();
     }
 
     bool operator[](size_t b) const noexcept {
@@ -315,11 +326,14 @@ private:
 using bitset8 = bitset<uint8_t>;
 using bitset32 = bitset<uint32_t>;
 using bitset64 = bitset<uint64_t>;
+using bitset128 = bitset<uint64_t, 2>;
 using bitset256 = bitset<uint64_t, 4>;
 
-static_assert(sizeof(bitset8) == sizeof(uint8_t), "bitset8 isn't 8 bits!");
-static_assert(sizeof(bitset32) == sizeof(uint32_t), "bitset32 isn't 32 bits!");
-static_assert(sizeof(bitset64) == sizeof(uint64_t), "bitset64 isn't 64 bits!");
+static_assert(sizeof(bitset8) == 1, "bitset8 isn't 8 bits!");
+static_assert(sizeof(bitset32) == 4, "bitset32 isn't 32 bits!");
+static_assert(sizeof(bitset64) == 8, "bitset64 isn't 64 bits!");
+static_assert(sizeof(bitset128) == 16, "bitset128 isn't 128 bits!");
+static_assert(sizeof(bitset256) == 32, "bitset256 isn't 256 bits!");
 
 } // namespace utils
 

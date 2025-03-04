@@ -56,11 +56,27 @@ public:
      * Allows users to toggle screenshots, change the sleep duration between tests, etc.
      */
     struct Options {
+
+        /**
+         * Formats that could be used for exporting the screenshots.
+         */
+        enum class ExportFormat : uint8_t {
+            /**
+             * Tagged Image File Format (TIFF)
+             */
+            TIFF = 0,
+
+            /**
+             * Netpbm color image format (Portable Pixel Map)
+             */
+            PPM = 1,
+        };
+
         /**
          * Minimum time that automation waits between applying a settings object and advancing
          * to the next test case. Specified in seconds.
          */
-        float sleepDuration = 0.2;
+        float sleepDuration = 0.2f;
 
         /**
          * Similar to sleepDuration, but expressed as a frame count. Both the minimum sleep time
@@ -82,6 +98,11 @@ public:
          * If true, the tick function writes out a settings JSON file before advancing.
          */
         bool exportSettings = false;
+
+        /**
+         * Which image format will be used for exporting screenshots.
+         */
+        ExportFormat exportFormat = ExportFormat::TIFF;
     };
 
     /**
@@ -158,7 +179,7 @@ public:
      * @param content       Contains the Filament View, Materials, and Renderer that get modified.
      * @param deltaTime     The amount of time that has passed since the previous tick in seconds.
      */
-    void tick(const ViewerContent& content, float deltaTime);
+    void tick(Engine* engine, const ViewerContent& content, float deltaTime);
 
     /**
      * Mutates a set of client-owned Filament objects according to a JSON string.
@@ -173,7 +194,7 @@ public:
      * @param jsonLength Number of characters in the json string.
      * @param content    Contains a set of Filament objects that you want to mutate.
      */
-    void applySettings(const char* json, size_t jsonLength, const ViewerContent& content);
+    void applySettings(Engine* engine, const char* json, size_t jsonLength, const ViewerContent& content);
 
     /**
      * Gets a color grading object that corresponds to the latest settings.
@@ -223,6 +244,9 @@ public:
      * @param filename Desired JSON filename.
      */
     static void exportSettings(const Settings& settings, const char* filename);
+
+    static void exportScreenshot(View* view, Renderer* renderer, std::string filename,
+            bool autoclose, AutomationEngine* automationEngine);
 
     Options getOptions() const { return mOptions; }
     bool isRunning() const { return mIsRunning; }

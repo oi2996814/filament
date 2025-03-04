@@ -35,6 +35,16 @@
 
 namespace filament {
 
+// The number of froxel buffer entries is determined by max UBO size (see
+// getFroxelBufferByteCount()). We also introduce the limit below because increasing the number of
+// froxels adds more pressure on the "record buffer" which stores the light indices per froxel. The
+// record buffer is limited to min(16K[ubo], 64K[uint16]) entries. In practice some froxels are not
+// used, so we can store more.
+constexpr size_t FROXEL_BUFFER_MAX_ENTRY_COUNT = 8192;
+
+// Froxel buffer UBO is an array of uvec4. Make sure that the buffer is properly aligned.
+static_assert(FROXEL_BUFFER_MAX_ENTRY_COUNT % 4 == 0u);
+
 class FEngine;
 class FCamera;
 class FTexture;
@@ -48,9 +58,10 @@ public:
 };
 
 //
-// Light UBO           Froxel Record Buffer     per-froxel light list texture
-// {4 x float4}         R_U8  {index into        RG_U16 {offset, point-count, spot-count}
+// Light UBO           Froxel Record UBO      per-froxel light list texture
+// {4 x float4}            {index into        RG_U16 {offset, point-count, spot-count}
 // (spot/point            light texture}
+//                     {uint4 -> 16 indices}
 //
 //  +----+                     +-+                     +----+
 // 0|....| <------------+     0| |         +-----------|0230| (e.g. offset=02, 3-lights)
@@ -69,16 +80,6 @@ public:
 // 256 lights max
 //
 
-// Max number of froxels limited by:
-// - max texture size [min 2048]
-// - chosen texture width [64]
-// - size of CPU-side indices [16 bits]
-// Also, increasing the number of froxels adds more pressure on the "record buffer" which stores
-// the light indices per froxel. The record buffer is limited to 65536 entries, so with
-// 8192 froxels, we can store 8 lights per froxels assuming they're all used. In practice, some
-// froxels are not used, so we can store more.
-static constexpr size_t FROXEL_BUFFER_ENTRY_COUNT_MAX = 8192;
-
 class Froxelizer {
 public:
     explicit Froxelizer(FEngine& engine);
@@ -92,7 +93,9 @@ public:
     }
 
     // gpu buffer containing froxels. valid after construction.
-    backend::Handle<backend::HwTexture> getFroxelTexture() const noexcept { return mFroxelTexture; }
+    backend::Handle<backend::HwBufferObject> getFroxelBuffer() const noexcept {
+        return mFroxelsBuffer;
+    }
 
     void setOptions(float zLightNear, float zLightFar) noexcept;
 
@@ -100,15 +103,15 @@ public:
      * Allocate per-frame data structures for froxelization.
      *
      * driverApi         used to allocate memory in the stream
-     * arena             use to allocate per-frame memory
-     * viewport          viewport used to calculate froxel dimensions
+     * arena             used to allocate per-frame memory
+     * viewport          used to calculate froxel dimensions
      * projection        camera projection matrix
      * projectionNear    near plane
      * projectionFar     far plane
      *
      * return true if updateUniforms() needs to be called
      */
-    bool prepare(backend::DriverApi& driverApi, ArenaScope& arena, Viewport const& viewport,
+    bool prepare(backend::DriverApi& driverApi, RootArenaScope& rootArenaScope, Viewport const& viewport,
             const math::mat4f& projection, float projectionNear, float projectionFar) noexcept;
 
     Froxel getFroxelAt(size_t x, size_t y, size_t z) const noexcept;
@@ -138,18 +141,17 @@ public:
      */
 
     struct FroxelEntry {
-        union {
-            uint32_t u32 = 0;
-            struct {
-                uint16_t offset;
-                uint8_t count;
-                uint8_t reserved;
-            };
-        };
+        inline FroxelEntry(uint16_t const offset, uint8_t const count) noexcept
+            : u32((offset << 16) | count) { }
+        inline uint8_t count() const noexcept { return u32 & 0xFFu; }
+        inline uint16_t offset() const noexcept { return u32 >> 16u; }
+        uint32_t u32 = 0;
     };
-    // This depends on the maximum number of lights (currently 255),and can't be more than 16 bits.
-    static_assert(CONFIG_MAX_LIGHT_INDEX <= std::numeric_limits<uint16_t>::max(), "can't have more than 65536 lights");
-    using RecordBufferType = std::conditional_t<CONFIG_MAX_LIGHT_INDEX <= std::numeric_limits<uint8_t>::max(), uint8_t, uint16_t>;
+    static_assert(sizeof(FroxelEntry) == 4u);
+
+    // we can't change this easily because the shader expects 16 indices per uint4
+    using RecordBufferType = uint8_t;
+
     const utils::Slice<FroxelEntry>& getFroxelBufferUser() const { return mFroxelBufferUser; }
     const utils::Slice<RecordBufferType>& getRecordBufferUser() const { return mRecordBufferUser; }
 
@@ -157,7 +159,13 @@ public:
     // with 256 lights this implies 8 jobs (256 / 32) for froxelization.
     using LightGroupType = uint32_t;
 
+    static size_t getFroxelBufferByteCount(FEngine::DriverApi& driverApi) noexcept;
+
 private:
+    size_t getFroxelBufferEntryCount() const noexcept {
+        return mFroxelBufferEntryCount;
+    }
+
     struct LightRecord {
         using bitset = utils::bitset<uint64_t, (CONFIG_MAX_LIGHT_COUNT + 63) / 64>;
         bitset lights;
@@ -185,7 +193,7 @@ private:
         uint16_t reserved;
     };
 
-    using FroxelThreadData = std::array<LightGroupType, FROXEL_BUFFER_ENTRY_COUNT_MAX>;
+    struct FroxelThreadData;
 
     inline void setViewport(Viewport const& viewport) noexcept;
     inline void setProjection(const math::mat4f& projection, float near, float far) noexcept;
@@ -203,8 +211,20 @@ private:
             utils::Slice<RecordBufferType> const& lightList,
             const FScene::LightSoa& lightData, size_t lightRecordsOffset) noexcept;
 
-    uint16_t getFroxelIndex(size_t ix, size_t iy, size_t iz) const noexcept {
-        return uint16_t(ix + (iy * mFroxelCountX) + (iz * mFroxelCountX * mFroxelCountY));
+    static void updateBoundingSpheres(
+            math::float4* UTILS_RESTRICT boundingSpheres,
+            size_t froxelCountX, size_t froxelCountY, size_t froxelCountZ,
+            math::float4 const* UTILS_RESTRICT planesX,
+            math::float4 const* UTILS_RESTRICT planesY,
+            float const* UTILS_RESTRICT planesZ) noexcept;
+
+    static size_t getFroxelIndex(size_t const ix, size_t const iy, size_t const iz,
+            size_t const froxelCountX, size_t const froxelCountY) noexcept {
+        return ix + (iy * froxelCountX) + (iz * froxelCountX * froxelCountY);
+    }
+
+    size_t getFroxelIndex(size_t const ix, size_t const iy, size_t const iz) const noexcept {
+        return getFroxelIndex(ix, iy, iz, mFroxelCountX, mFroxelCountY);
     }
 
     size_t findSliceZ(float viewSpaceZ) const noexcept UTILS_PURE;
@@ -213,27 +233,32 @@ private:
 
     static void computeFroxelLayout(
             math::uint2* dim, uint16_t* countX, uint16_t* countY, uint16_t* countZ,
-            Viewport const& viewport) noexcept;
+            size_t froxelBufferEntryCount, Viewport const& viewport) noexcept;
 
-    // internal state dependant on the viewport and needed for froxelizing
-    LinearAllocatorArena mArena;                    // ~256 KiB
+    // internal state dependent on the viewport and needed for froxelizing
+    LinearAllocatorArena mArena;                        // ~256 KiB
 
-    float* mDistancesZ = nullptr;                   // max 2.1 MiB (actual: resolution dependant)
+    // 4096 froxels fits in a 16KiB buffer, the minimum guaranteed in GLES 3.x and Vulkan 1.1
+    size_t mFroxelBufferEntryCount = 4096;
+
+    // allocations in the private froxel arena
+    float* mDistancesZ = nullptr;
     math::float4* mPlanesX = nullptr;
     math::float4* mPlanesY = nullptr;
-    math::float4* mBoundingSpheres = nullptr;
+    math::float4* mBoundingSpheres = nullptr;           // 128 KiB w/ 8192 froxels
 
-    utils::Slice<FroxelThreadData> mFroxelShardedData;  // 256 KiB w/  256 lights
+    // allocations in the per frame arena
+    utils::Slice<FroxelThreadData> mFroxelShardedData;  // 256 KiB w/  256 lights and 8192 froxels
     utils::Slice<FroxelEntry> mFroxelBufferUser;        //  32 KiB w/ 8192 froxels
+    utils::Slice<LightRecord> mLightRecords;            // 256 KiB w/  256 lights
 
-    // max 32 KiB  (actual: resolution dependant)
+    // allocations in the command stream
     utils::Slice<RecordBufferType> mRecordBufferUser;   //  16 KiB
-    utils::Slice<LightRecord> mLightRecords;            // 256 KiB w/ 256 lights
 
     uint16_t mFroxelCountX = 0;
     uint16_t mFroxelCountY = 0;
     uint16_t mFroxelCountZ = 0;
-    uint16_t mFroxelCount = 0;
+    uint32_t mFroxelCount = 0;
     math::uint2 mFroxelDimension = {};
 
     math::mat4f mProjection;
@@ -241,15 +266,15 @@ private:
     float mClipToFroxelX = 0.0f;
     float mClipToFroxelY = 0.0f;
     backend::BufferObjectHandle mRecordsBuffer;
-    backend::Handle<backend::HwTexture> mFroxelTexture;
+    backend::BufferObjectHandle mFroxelsBuffer;
 
     // needed for update()
     Viewport mViewport;
     math::float4 mParamsZ = {};
     math::uint3 mParamsF = {};
     float mNear = 0.0f;        // camera near
-    float mZLightFar = FEngine::CONFIG_Z_LIGHT_FAR;
-    float mZLightNear = FEngine::CONFIG_Z_LIGHT_NEAR;  // light near (first slice)
+    float mZLightNear;
+    float mZLightFar;
 
     // track if we need to update our internal state before froxelizing
     uint8_t mDirtyFlags = 0;

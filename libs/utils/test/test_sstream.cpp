@@ -18,7 +18,32 @@
 
 #include <utils/sstream.h>
 
+#include <utils/Log.h>
+
+using namespace utils;
 using namespace utils::io;
+
+TEST(ostream, setConsumer) {
+    slog.d.setConsumer(+[](void*, char const*) {
+        GTEST_FAIL();
+    }, nullptr);
+    // we test that we don't crash if the log is empty and that we don't call the consumer.
+    flush(slog.d);
+
+    slog.d.setConsumer(nullptr, nullptr);
+    slog.d << "hello world";
+    // we test that after resetting the consumer, it's not called on flush.
+    flush(slog.d);
+
+    const char* str = "hello world!";
+    slog.d.setConsumer(+[](void* user, char const* str) {
+        ASSERT_STREQ(str, (const char*)user);
+    }, (void*)str);
+    slog.d << str;
+    // we test that the comsumer is called with the right string
+    flush(slog.d);
+    slog.d.setConsumer(nullptr, nullptr);
+}
 
 TEST(sstream, EmptyString) {
     sstream ss;
@@ -78,13 +103,13 @@ TEST(sstream, Formatting) {
     }
     {
         sstream ss;
-        ss << (float) 3.14;
-        EXPECT_STREQ("3.140000", ss.c_str());
+        ss << (float) 3.14; // 3.14 can't be represented exactly by a float
+        EXPECT_STREQ("3.1400001", ss.c_str());
     }
     {
         sstream ss;
         ss << (double) -1;
-        EXPECT_STREQ("-1.000000", ss.c_str());
+        EXPECT_STREQ("-1", ss.c_str());
     }
     {
         sstream ss;
@@ -119,6 +144,7 @@ TEST(sstream, LargeBuffer) {
     }
 
     EXPECT_EQ(1024 * 1024 * 16, strlen(ss.c_str()));
+    EXPECT_EQ(1024 * 1024 * 16, ss.length());
 }
 
 TEST(sstream, LargeString) {
@@ -133,6 +159,7 @@ TEST(sstream, LargeString) {
     ss << filler;
 
     EXPECT_EQ(size, strlen(ss.c_str()));
+    EXPECT_EQ(size, ss.length());
     EXPECT_STREQ(filler, ss.c_str());
 
     free(filler);
@@ -157,7 +184,18 @@ TEST(sstream, SeveralStrings) {
     ss << fillerB;
 
     EXPECT_EQ(sizeA + sizeB, strlen(ss.c_str()));
+    EXPECT_EQ(sizeA + sizeB, ss.length());
 
     free(fillerA);
     free(fillerB);
+}
+
+TEST(sstream, length) {
+    sstream ss;
+
+    EXPECT_EQ(0, ss.length());
+    ss << "Hello, world\n";
+    EXPECT_EQ(13, ss.length());
+    ss << "Foo bar\n";
+    EXPECT_EQ(13 + 8, ss.length());
 }

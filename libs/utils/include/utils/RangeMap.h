@@ -22,6 +22,9 @@
 #include <utils/debug.h>
 
 #include <map>
+#include <utility>
+
+#include <stddef.h>
 
 namespace utils {
 
@@ -116,7 +119,8 @@ public:
      */
     const ValueType& get(KeyType key) const {
         ConstIterator iter = findRange(key);
-        ASSERT_PRECONDITION(iter != end(), "RangeMap: No element exists at the given key.");
+        FILAMENT_CHECK_PRECONDITION(iter != end())
+                << "RangeMap: No element exists at the given key.";
         return getValue(iter);
     }
 
@@ -264,7 +268,7 @@ private:
     Iterator shrink(Iterator iter, KeyType first, KeyType last) {
         assert_invariant(first < last);
         assert_invariant(getRange(iter).first == first || getRange(iter).last == last);
-        std::pair<utils::Range<KeyType>, ValueType> value = {{first, last}, iter->second.second};
+        std::pair<Range<KeyType>, ValueType> value = {{first, last}, iter->second.second};
         mMap.erase(iter);
         return mMap.insert({first, value}).first;
     }

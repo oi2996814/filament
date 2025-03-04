@@ -17,15 +17,20 @@
 #ifndef TNT_FILAMENT_BACKEND_PRIVATE_DRIVER_H
 #define TNT_FILAMENT_BACKEND_PRIVATE_DRIVER_H
 
+#include <backend/CallbackHandler.h>
+#include <backend/DescriptorSetOffsetArray.h>
+#include <backend/DriverApiForward.h>
 #include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 #include <backend/PipelineState.h>
 #include <backend/TargetBufferInfo.h>
 
-#include "private/backend/DriverApiForward.h"
-
+#include <utils/CString.h>
 #include <utils/compiler.h>
 
+#include <functional>
+
+#include <stddef.h>
 #include <stdint.h>
 
 // Command debugging off. debugging virtuals are not called.
@@ -46,7 +51,6 @@ class BufferDescriptor;
 class CallbackHandler;
 class PixelBufferDescriptor;
 class Program;
-class SamplerGroup;
 
 template<typename T>
 class ConcreteDispatcher;
@@ -65,6 +69,16 @@ public:
 
     virtual ShaderModel getShaderModel() const noexcept = 0;
 
+    // The shader language used for shaders for this driver, used to inform matdbg.
+    //
+    // For OpenGL, this distinguishes whether the driver's shaders are powered by ESSL1 or ESSL3.
+    // This information is used by matdbg to display the correct shader code to the web UI and patch
+    // the correct chunk when rebuilding shaders live.
+    //
+    // Metal shaders can either be MSL or Metal libraries, but at time of writing, matdbg can only
+    // interface with MSL.
+    virtual ShaderLanguage getShaderLanguage() const noexcept = 0;
+
     // Returns the dispatcher. This is only called once during initialization of the CommandStream,
     // so it doesn't matter that it's virtual.
     virtual Dispatcher getDispatcher() const noexcept = 0;
@@ -73,7 +87,7 @@ public:
     // the fn function will execute a batch of driver commands
     // this gives the driver a chance to wrap their execution in a meaningful manner
     // the default implementation simply calls fn
-    virtual void execute(std::function<void(void)> const& fn) noexcept;
+    virtual void execute(std::function<void(void)> const& fn);
 
     // This is called on debug build, or when enabled manually on the backend thread side.
     virtual void debugCommandBegin(CommandStream* cmds,

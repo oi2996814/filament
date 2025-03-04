@@ -28,6 +28,14 @@
 using namespace filament;
 using namespace backend;
 
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Renderer_nSkipFrame(JNIEnv *, jclass, jlong nativeRenderer,
+        jlong vsyncSteadyClockTimeNano) {
+    Renderer *renderer = (Renderer *) nativeRenderer;
+    renderer->skipFrame(uint64_t(vsyncSteadyClockTimeNano));
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_android_filament_Renderer_nBeginFrame(JNIEnv *, jclass, jlong nativeRenderer,
         jlong nativeSwapChain, jlong frameTimeNanos) {
@@ -156,12 +164,9 @@ Java_com_google_android_filament_Renderer_nResetUserTime(JNIEnv*, jclass, jlong 
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_Renderer_nSetDisplayInfo(JNIEnv*, jclass, jlong nativeRenderer,
-        jfloat refreshRate, jlong presentationDeadlineNanos, jlong vsyncOffsetNanos) {
+Java_com_google_android_filament_Renderer_nSetDisplayInfo(JNIEnv*, jclass, jlong nativeRenderer, jfloat refreshRate) {
     Renderer *renderer = (Renderer *) nativeRenderer;
-    renderer->setDisplayInfo({ .refreshRate = refreshRate,
-                               .presentationDeadlineNanos = (uint64_t)presentationDeadlineNanos,
-                               .vsyncOffsetNanos = (uint64_t)vsyncOffsetNanos });
+    renderer->setDisplayInfo({ .refreshRate = refreshRate });
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -182,4 +187,18 @@ Java_com_google_android_filament_Renderer_nSetClearOptions(JNIEnv *, jclass ,
     renderer->setClearOptions({ .clearColor = {r, g, b, a},
                                 .clear = (bool) clear,
                                 .discard = (bool) discard});
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Renderer_nSetPresentationTime(JNIEnv *, jclass ,
+    jlong nativeRenderer, jlong monotonicClockNanos) {
+    Renderer *renderer = (Renderer *) nativeRenderer;
+    renderer->setPresentationTime(monotonicClockNanos);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Renderer_nSetVsyncTime(JNIEnv *, jclass,
+    jlong nativeRenderer, jlong steadyClockTimeNano) {
+    Renderer *renderer = (Renderer *) nativeRenderer;
+    renderer->setVsyncTime(steadyClockTimeNano);
 }

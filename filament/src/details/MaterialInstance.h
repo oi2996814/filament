@@ -17,26 +17,44 @@
 #ifndef TNT_FILAMENT_DETAILS_MATERIALINSTANCE_H
 #define TNT_FILAMENT_DETAILS_MATERIALINSTANCE_H
 
-#include "upcast.h"
+#include "downcast.h"
+
 #include "UniformBuffer.h"
+
+#include "ds/DescriptorSet.h"
+
 #include "details/Engine.h"
 
 #include "private/backend/DriverApi.h"
 
+#include <filament/MaterialInstance.h>
+
+#include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 
-#include <math/scalar.h>
+#include <utils/BitmaskEnum.h>
+#include <utils/bitset.h>
+#include <utils/CString.h>
 
-#include <utils/compiler.h>
+#include <tsl/robin_map.h>
 
-#include <filament/MaterialInstance.h>
+#include <algorithm>
+#include <limits>
+#include <mutex>
+#include <string_view>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
 class FMaterial;
+class FTexture;
 
 class FMaterialInstance : public MaterialInstance {
 public:
+    FMaterialInstance(FEngine& engine, FMaterial const* material,
+                      const char* name) noexcept;
     FMaterialInstance(FEngine& engine, FMaterialInstance const* other, const char* name);
     FMaterialInstance(const FMaterialInstance& rhs) = delete;
     FMaterialInstance& operator=(const FMaterialInstance& rhs) = delete;
@@ -47,55 +65,54 @@ public:
 
     void terminate(FEngine& engine);
 
-    void commit(FEngine::DriverApi& driver) const {
-        if (UTILS_UNLIKELY(mUniforms.isDirty() || mSamplers.isDirty())) {
-            commitSlow(driver);
-        }
-    }
+    void commit(FEngine::DriverApi& driver) const;
 
-    void use(FEngine::DriverApi& driver) const {
-        if (mUbHandle) {
-            driver.bindUniformBuffer(BindingPoints::PER_MATERIAL_INSTANCE, mUbHandle);
-        }
-        if (mSbHandle) {
-            driver.bindSamplers(BindingPoints::PER_MATERIAL_INSTANCE, mSbHandle);
-        }
-    }
+    void use(FEngine::DriverApi& driver) const;
 
     FMaterial const* getMaterial() const noexcept { return mMaterial; }
 
     uint64_t getSortingKey() const noexcept { return mMaterialSortingKey; }
 
     UniformBuffer const& getUniformBuffer() const noexcept { return mUniforms; }
-    backend::SamplerGroup const& getSamplerGroup() const noexcept { return mSamplers; }
 
-    void setScissor(int32_t left, int32_t bottom, uint32_t width, uint32_t height) noexcept {
-        mScissorRect = { left, bottom,
-                std::min(width, (uint32_t)std::numeric_limits<int32_t>::max()),
-                std::min(height, (uint32_t)std::numeric_limits<int32_t>::max())
-        };
+    void setScissor(uint32_t const left, uint32_t const bottom, uint32_t const width, uint32_t const height) noexcept {
+        constexpr uint32_t maxvalu = std::numeric_limits<int32_t>::max();
+        mScissorRect = { int32_t(left), int32_t(bottom),
+                std::min(width, maxvalu), std::min(height, maxvalu) };
+        mHasScissor = true;
     }
 
     void unsetScissor() noexcept {
-        mScissorRect = { 0, 0,
-                (uint32_t)std::numeric_limits<int32_t>::max(),
-                (uint32_t)std::numeric_limits<int32_t>::max()
-        };
+        constexpr uint32_t maxvalu = std::numeric_limits<int32_t>::max();
+        mScissorRect = { 0, 0, maxvalu, maxvalu };
+        mHasScissor = false;
     }
 
     backend::Viewport const& getScissor() const noexcept { return mScissorRect; }
 
+    bool hasScissor() const noexcept { return mHasScissor; }
+
     backend::CullingMode getCullingMode() const noexcept { return mCulling; }
 
-    bool getColorWrite() const noexcept { return mColorWrite; }
+    backend::CullingMode getShadowCullingMode() const noexcept { return mShadowCulling; }
 
-    bool getDepthWrite() const noexcept { return mDepthWrite; }
+    bool isColorWriteEnabled() const noexcept { return mColorWrite; }
+
+    bool isDepthWriteEnabled() const noexcept { return mDepthWrite; }
+
+    bool isStencilWriteEnabled() const noexcept { return mStencilState.stencilWrite; }
+
+    backend::StencilState getStencilState() const noexcept { return mStencilState; }
 
     TransparencyMode getTransparencyMode() const noexcept { return mTransparencyMode; }
 
     backend::RasterState::DepthFunc getDepthFunc() const noexcept { return mDepthFunc; }
 
-    void setPolygonOffset(float scale, float constant) noexcept {
+    void setDepthFunc(backend::RasterState::DepthFunc const depthFunc) noexcept {
+        mDepthFunc = depthFunc;
+    }
+
+    void setPolygonOffset(float const scale, float const constant) noexcept {
         // handle reversed Z
         mPolygonOffset = { -scale, -constant };
     }
@@ -104,26 +121,120 @@ public:
 
     void setMaskThreshold(float threshold) noexcept;
 
+    float getMaskThreshold() const noexcept;
+
     void setSpecularAntiAliasingVariance(float variance) noexcept;
+
+    float getSpecularAntiAliasingVariance() const noexcept;
 
     void setSpecularAntiAliasingThreshold(float threshold) noexcept;
 
+    float getSpecularAntiAliasingThreshold() const noexcept;
+
     void setDoubleSided(bool doubleSided) noexcept;
+
+    bool isDoubleSided() const noexcept;
 
     void setTransparencyMode(TransparencyMode mode) noexcept;
 
-    void setCullingMode(CullingMode culling) noexcept { mCulling = culling; }
+    void setCullingMode(CullingMode const culling) noexcept {
+        mCulling = culling;
+        mShadowCulling = culling;
+    }
 
-    void setColorWrite(bool enable) noexcept { mColorWrite = enable; }
+    void setCullingMode(CullingMode const color, CullingMode const shadow) noexcept {
+        mCulling = color;
+        mShadowCulling = shadow;
+    }
 
-    void setDepthWrite(bool enable) noexcept { mDepthWrite = enable; }
+    void setColorWrite(bool const enable) noexcept { mColorWrite = enable; }
+
+    void setDepthWrite(bool const enable) noexcept { mDepthWrite = enable; }
+
+    void setStencilWrite(bool const enable) noexcept { mStencilState.stencilWrite = enable; }
 
     void setDepthCulling(bool enable) noexcept;
 
+    bool isDepthCullingEnabled() const noexcept;
+
+    void setStencilCompareFunction(StencilCompareFunc const func, StencilFace const face) noexcept {
+        if (any(face & StencilFace::FRONT)) {
+            mStencilState.front.stencilFunc = func;
+        }
+        if (any(face & StencilFace::BACK)) {
+            mStencilState.back.stencilFunc = func;
+        }
+    }
+
+    void setStencilOpStencilFail(StencilOperation const op, StencilFace const face) noexcept {
+        if (any(face & StencilFace::FRONT)) {
+            mStencilState.front.stencilOpStencilFail = op;
+        }
+        if (any(face & StencilFace::BACK)) {
+            mStencilState.back.stencilOpStencilFail = op;
+        }
+    }
+
+    void setStencilOpDepthFail(StencilOperation const op, StencilFace const face) noexcept {
+        if (any(face & StencilFace::FRONT)) {
+            mStencilState.front.stencilOpDepthFail = op;
+        }
+        if (any(face & StencilFace::BACK)) {
+            mStencilState.back.stencilOpDepthFail = op;
+        }
+    }
+
+    void setStencilOpDepthStencilPass(StencilOperation const op, StencilFace const face) noexcept {
+        if (any(face & StencilFace::FRONT)) {
+            mStencilState.front.stencilOpDepthStencilPass = op;
+        }
+        if (any(face & StencilFace::BACK)) {
+            mStencilState.back.stencilOpDepthStencilPass = op;
+        }
+    }
+
+    void setStencilReferenceValue(uint8_t const value, StencilFace const face) noexcept {
+        if (any(face & StencilFace::FRONT)) {
+            mStencilState.front.ref = value;
+        }
+        if (any(face & StencilFace::BACK)) {
+            mStencilState.back.ref = value;
+        }
+    }
+
+    void setStencilReadMask(uint8_t const readMask, StencilFace const face) noexcept {
+        if (any(face & StencilFace::FRONT)) {
+            mStencilState.front.readMask = readMask;
+        }
+        if (any(face & StencilFace::BACK)) {
+            mStencilState.back.readMask = readMask;
+        }
+    }
+
+    void setStencilWriteMask(uint8_t const writeMask, StencilFace const face) noexcept {
+        if (any(face & StencilFace::FRONT)) {
+            mStencilState.front.writeMask = writeMask;
+        }
+        if (any(face & StencilFace::BACK)) {
+            mStencilState.back.writeMask = writeMask;
+        }
+    }
+
+    void setDefaultInstance(bool const value) noexcept {
+        mIsDefaultInstance = value;
+    }
+
+    bool isDefaultInstance() const noexcept {
+        return mIsDefaultInstance;
+    }
+
+    // Called by the engine to ensure that unset samplers are initialized with placedholders.
+    void fixMissingSamplers() const;
+
     const char* getName() const noexcept;
 
-    void setParameter(const char* name,
-            backend::Handle<backend::HwTexture> texture, backend::SamplerParams params) noexcept;
+    void setParameter(std::string_view name,
+            backend::Handle<backend::HwTexture> texture, backend::SamplerParams params);
 
     using MaterialInstance::setParameter;
 
@@ -132,51 +243,68 @@ private:
     friend class MaterialInstance;
 
     template<size_t Size>
-    void setParameterUntypedImpl(const char* name, const void* value) noexcept;
+    void setParameterUntypedImpl(std::string_view name, const void* value);
 
     template<size_t Size>
-    void setParameterUntypedImpl(const char* name, const void* value, size_t count) noexcept;
+    void setParameterUntypedImpl(std::string_view name, const void* value, size_t count);
 
     template<typename T>
-    void setParameterImpl(const char* name, T const& value) noexcept;
+    void setParameterImpl(std::string_view name, T const& value);
 
     template<typename T>
-    void setParameterImpl(const char* name, const T* value, size_t count) noexcept;
+    void setParameterImpl(std::string_view name, const T* value, size_t count);
 
-    void setParameterImpl(const char* name,
-            Texture const* texture, TextureSampler const& sampler) noexcept;
+    void setParameterImpl(std::string_view name,
+            FTexture const* texture, TextureSampler const& sampler);
 
-    FMaterialInstance() noexcept;
-    void initDefaultInstance(FEngine& engine, FMaterial const* material);
-
-    void commitSlow(FEngine::DriverApi& driver) const;
+    template<typename T>
+    T getParameterImpl(std::string_view name) const;
 
     // keep these grouped, they're accessed together in the render-loop
     FMaterial const* mMaterial = nullptr;
-    backend::Handle<backend::HwBufferObject> mUbHandle;
-    backend::Handle<backend::HwSamplerGroup> mSbHandle;
 
+    struct TextureParameter {
+        FTexture const* texture;
+        backend::SamplerParams params;
+    };
+
+    backend::Handle<backend::HwBufferObject> mUbHandle;
+    tsl::robin_map<backend::descriptor_binding_t, TextureParameter> mTextureParameters;
+    mutable DescriptorSet mDescriptorSet;
     UniformBuffer mUniforms;
-    backend::SamplerGroup mSamplers;
-    backend::PolygonOffset mPolygonOffset;
-    backend::CullingMode mCulling;
-    bool mColorWrite;
-    bool mDepthWrite;
-    backend::RasterState::DepthFunc mDepthFunc;
-    TransparencyMode mTransparencyMode;
+
+    backend::PolygonOffset mPolygonOffset{};
+    backend::StencilState mStencilState{};
+
+    float mMaskThreshold = 0.0f;
+    float mSpecularAntiAliasingVariance = 0.0f;
+    float mSpecularAntiAliasingThreshold = 0.0f;
+
+    backend::CullingMode mCulling : 2;
+    backend::CullingMode mShadowCulling : 2;
+    backend::RasterState::DepthFunc mDepthFunc : 3;
+
+    bool mColorWrite : 1;
+    bool mDepthWrite : 1;
+    bool mHasScissor : 1;
+    bool mIsDoubleSided : 1;
+    bool mIsDefaultInstance : 1;
+    TransparencyMode mTransparencyMode : 2;
 
     uint64_t mMaterialSortingKey = 0;
 
     // Scissor rectangle is specified as: Left Bottom Width Height.
     backend::Viewport mScissorRect = { 0, 0,
-            (uint32_t)std::numeric_limits<int32_t>::max(),
-            (uint32_t)std::numeric_limits<int32_t>::max()
+            uint32_t(std::numeric_limits<int32_t>::max()),
+            uint32_t(std::numeric_limits<int32_t>::max())
     };
 
     utils::CString mName;
+    mutable utils::bitset64 mMissingSamplerDescriptors{};
+    mutable std::once_flag mMissingSamplersFlag;
 };
 
-FILAMENT_UPCAST(MaterialInstance)
+FILAMENT_DOWNCAST(MaterialInstance)
 
 } // namespace filament
 

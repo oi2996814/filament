@@ -17,7 +17,7 @@
 #ifndef TNT_FILAMENT_DETAILS_RENDERER_H
 #define TNT_FILAMENT_DETAILS_RENDERER_H
 
-#include "upcast.h"
+#include "downcast.h"
 
 #include "Allocators.h"
 #include "FrameInfo.h"
@@ -27,10 +27,7 @@
 
 #include "details/SwapChain.h"
 
-#include "private/backend/DriverApiForward.h"
-
-#include <fg/FrameGraphId.h>
-#include <fg/FrameGraphTexture.h>
+#include "backend/DriverApiForward.h"
 
 #include <filament/Renderer.h>
 #include <filament/Viewport.h>
@@ -40,10 +37,24 @@
 
 #include <utils/compiler.h>
 #include <utils/Allocator.h>
+#include <utils/FixedCapacityVector.h>
+
+#include <math/vec4.h>
 
 #include <tsl/robin_set.h>
 
+#include <algorithm>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <utility>
+
+#include <stddef.h>
+#include <stdint.h>
+
 namespace filament {
+
+class ResourceAllocator;
 
 namespace backend {
 class Driver;
@@ -75,6 +86,14 @@ public:
     // renders a single standalone view. The view must have a a custom rendertarget.
     void renderStandaloneView(FView const* view);
 
+
+    void setPresentationTime(int64_t monotonic_clock_ns);
+
+    void setVsyncTime(uint64_t steadyClockTimeNano) noexcept;
+
+    // skip a frame
+    void skipFrame(uint64_t vsyncSteadyClockTimeNano);
+
     // start a frame
     bool beginFrame(FSwapChain* swapChain, uint64_t vsyncSteadyClockTimeNano);
 
@@ -99,7 +118,7 @@ public:
 
 
     void setDisplayInfo(DisplayInfo const& info) noexcept {
-        mDisplayInfo = info;
+        mDisplayInfo.refreshRate = info.refreshRate;
     }
 
     void setFrameRateOptions(FrameRateOptions const& options) noexcept {
@@ -124,6 +143,18 @@ public:
         mClearOptions = options;
     }
 
+    ClearOptions const& getClearOptions() const noexcept {
+        return mClearOptions;
+    }
+
+    utils::FixedCapacityVector<FrameInfo> getFrameInfoHistory(size_t const historySize) const noexcept {
+        return mFrameInfoManager.getFrameInfoHistory(historySize);
+    }
+
+    size_t getMaxFrameHistorySize() const noexcept {
+        return MAX_FRAMETIME_HISTORY;
+    }
+
 private:
     friend class Renderer;
     using Command = RenderPass::Command;
@@ -131,19 +162,23 @@ private:
     using Epoch = clock::time_point;
     using duration = clock::duration;
 
-    void initializeClearFlags();
+    backend::TargetBufferFlags getClearFlags() const noexcept;
+    void initializeClearFlags() noexcept;
 
     backend::TextureFormat getHdrFormat(const FView& view, bool translucent) const noexcept;
     backend::TextureFormat getLdrFormat(bool translucent) const noexcept;
 
     Epoch getUserEpoch() const { return mUserEpoch; }
-    duration getUserTime() const noexcept { return clock::now() - getUserEpoch(); }
+    double getUserTime() const noexcept {
+        duration const d = clock::now() - getUserEpoch();
+        // convert the duration (whatever it is) to a duration in seconds encoded as double
+        return std::chrono::duration<double>(d).count();
+    }
 
-    void getRenderTarget(FView const& view,
-            backend::TargetBufferFlags& outAttachementMask,
-            backend::Handle<backend::HwRenderTarget>& outTarget) const noexcept;
+    std::pair<backend::Handle<backend::HwRenderTarget>, backend::TargetBufferFlags>
+            getRenderTarget(FView const& view) const noexcept;
 
-    void recordHighWatermark(size_t watermark) noexcept {
+    void recordHighWatermark(size_t const watermark) noexcept {
         mCommandsHighWatermark = std::max(mCommandsHighWatermark, watermark);
     }
 
@@ -152,7 +187,7 @@ private:
     }
 
     void renderInternal(FView const* view);
-    void renderJob(ArenaScope& arena, FView& view);
+    void renderJob(RootArenaScope& rootArenaScope, FView& view);
 
     // keep a reference to our engine
     FEngine& mEngine;
@@ -176,12 +211,11 @@ private:
     backend::TargetBufferFlags mClearFlags{};
     tsl::robin_set<FRenderTarget*> mPreviousRenderTargets;
     std::function<void()> mBeginFrameInternal;
-
-    // per-frame arena for this Renderer
-    LinearAllocatorArena& mPerRenderPassArena;
+    uint64_t mVsyncSteadyClockTimeNano = 0;
+    std::unique_ptr<ResourceAllocator> mResourceAllocator{};
 };
 
-FILAMENT_UPCAST(Renderer)
+FILAMENT_DOWNCAST(Renderer)
 
 } // namespace filament
 

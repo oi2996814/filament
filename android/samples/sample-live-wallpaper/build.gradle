@@ -3,7 +3,13 @@ apply plugin: 'kotlin-android'
 
 project.ext.isSample = true
 
+kotlin {
+    jvmToolchain(versions.jdk)
+}
+
 android {
+    namespace 'com.google.android.filament.livewallpaper'
+
     compileSdkVersion versions.compileSdk
     defaultConfig {
         applicationId "com.google.android.filament.livewallpaper"
@@ -15,6 +21,11 @@ android {
     //       is not configuration-cache friendly yet; this is only useful for Play publication
     dependenciesInfo {
         includeInApk = false
+    }
+
+    compileOptions {
+        sourceCompatibility versions.jdk
+        targetCompatibility versions.jdk
     }
 }
 

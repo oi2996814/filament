@@ -16,6 +16,8 @@
 
 #include <viewer/AutomationEngine.h>
 
+#include "TIFFExport.h"
+
 #include <filament/Camera.h>
 #include <filament/Engine.h>
 #include <filament/Renderer.h>
@@ -44,7 +46,9 @@ struct ScreenshotState {
     AutomationEngine* engine;
 };
 
-static void convertRGBAtoRGB(void* buffer, uint32_t width, uint32_t height) {
+namespace {
+
+void convertRGBAtoRGB(void* buffer, uint32_t width, uint32_t height) {
     uint8_t* writePtr = static_cast<uint8_t*>(buffer);
     uint8_t const* readPtr = static_cast<uint8_t const*>(buffer);
     for (uint32_t i = 0, n = width * height; i < n; ++i) {
@@ -56,7 +60,26 @@ static void convertRGBAtoRGB(void* buffer, uint32_t width, uint32_t height) {
     }
 }
 
-static void exportScreenshot(View* view, Renderer* renderer, std::string filename,
+void exportPPM(void* buffer, uint32_t width, uint32_t height, std::ofstream& outstream) {
+    // ReadPixels on Metal only supports RGBA, but the PPM format only supports RGB.
+    // So, manually perform a quick transformation here.
+    convertRGBAtoRGB(buffer, width, height);
+
+    outstream << "P6 " << width << " " << height << " " << 255 << std::endl;
+    outstream.write(static_cast<char*>(buffer), width * height * 3);
+}
+
+using ExportFormat = AutomationEngine::Options::ExportFormat;
+constexpr char const* getExportFormatExtension(ExportFormat format) {
+    switch (format) {
+        case ExportFormat::PPM: return ".ppm";
+        case ExportFormat::TIFF: return ".tif";
+    }
+}
+
+} // anonymous namespace
+
+void AutomationEngine::exportScreenshot(View* view, Renderer* renderer, std::string filename,
         bool autoclose, AutomationEngine* automationEngine) {
     const Viewport& vp = view->getViewport();
     const size_t byteCount = vp.width * vp.height * 4;
@@ -75,14 +98,21 @@ static void exportScreenshot(View* view, Renderer* renderer, std::string filenam
             }
             const Viewport& vp = state->view->getViewport();
 
-            // ReadPixels on Metal only supports RGBA, but the PPM format only supports RGB.
-            // So, manually perform a quick transformation here.
-            convertRGBAtoRGB(buffer, vp.width, vp.height);
-
             Path out(state->filename);
-            std::ofstream ppmStream(out);
-            ppmStream << "P6 " << vp.width << " " << vp.height << " " << 255 << std::endl;
-            ppmStream.write(static_cast<char*>(buffer), vp.width * vp.height * 3);
+            std::ofstream outstream(out);
+
+            auto extension = out.getExtension();
+            if (extension == "ppm") {
+                exportPPM(buffer, vp.width, vp.height, outstream);
+            } else if (extension == "tif" || extension == "tiff") {
+                exportTIFF(buffer, vp.width, vp.height, outstream);
+            } else {
+                utils::slog.e << out.c_str() << " does not specify a supported file extension."
+                              << utils::io::endl;
+            }
+
+            outstream.close();
+
             delete[] static_cast<uint8_t*>(buffer);
             if (state->autoclose) {
                 state->engine->requestClose();
@@ -154,7 +184,7 @@ void AutomationEngine::exportSettings(const Settings& settings, const char* file
     gStatus = "Exported to '" + std::string(filename) + "' in the current folder.";
 }
 
-void AutomationEngine::applySettings(const char* json, size_t jsonLength,
+void AutomationEngine::applySettings(Engine* engine, const char* json, size_t jsonLength,
         const ViewerContent& content) {
     JsonSerializer serializer;
     if (!serializer.readJson(json, jsonLength, mSettings)) {
@@ -162,15 +192,15 @@ void AutomationEngine::applySettings(const char* json, size_t jsonLength,
         slog.e << "Badly formed JSON:\n" << jsonWithTerminator.c_str() << io::endl;
         return;
     }
-    viewer::applySettings(mSettings->view, content.view);
+    viewer::applySettings(engine, mSettings->view, content.view);
     for (size_t i = 0; i < content.materialCount; i++) {
-        viewer::applySettings(mSettings->material, content.materials[i]);
+        viewer::applySettings(engine, mSettings->material, content.materials[i]);
     }
-    viewer::applySettings(mSettings->lighting, content.indirectLight, content.sunlight,
+    viewer::applySettings(engine, mSettings->lighting, content.indirectLight, content.sunlight,
             content.assetLights, content.assetLightCount, content.lightManager, content.scene, content.view);
     Camera* camera = &content.view->getCamera();
     Skybox* skybox = content.scene->getSkybox();
-    viewer::applySettings(mSettings->viewer, camera, skybox, content.renderer);
+    viewer::applySettings(engine, mSettings->viewer, camera, skybox, content.renderer);
 }
 
 ColorGrading* AutomationEngine::getColorGrading(Engine* engine) {
@@ -197,14 +227,14 @@ ViewerOptions AutomationEngine::getViewerOptions() const {
     return mSettings->viewer;
 }
 
-void AutomationEngine::tick(const ViewerContent& content, float deltaTime) {
-    const auto activateTest = [this, content]() {
+void AutomationEngine::tick(Engine* engine, const ViewerContent& content, float deltaTime) {
+    const auto activateTest = [this, engine, content]() {
         mElapsedTime = 0;
         mElapsedFrames = 0;
         mSpec->get(mCurrentTest, mSettings);
-        viewer::applySettings(mSettings->view, content.view);
+        viewer::applySettings(engine, mSettings->view, content.view);
         for (size_t i = 0; i < content.materialCount; i++) {
-            viewer::applySettings(mSettings->material, content.materials[i]);
+            viewer::applySettings(engine, mSettings->material, content.materials[i]);
         }
         if (mOptions.verbose) {
             utils::slog.i << "Running test " << mCurrentTest << utils::io::endl;
@@ -244,7 +274,8 @@ void AutomationEngine::tick(const ViewerContent& content, float deltaTime) {
     }
 
     if (mOptions.exportScreenshots) {
-        exportScreenshot(content.view, content.renderer, prefix + ".ppm", isLastTest, this);
+        AutomationEngine::exportScreenshot(content.view, content.renderer,
+                prefix + getExportFormatExtension(mOptions.exportFormat), isLastTest, this);
     }
 
     if (isLastTest) {

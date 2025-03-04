@@ -50,6 +50,8 @@ private:
             filamat::MaterialBuilder& builder) const noexcept;
     bool processFragmentShader(const MaterialLexeme&,
             filamat::MaterialBuilder& builder) const noexcept;
+    bool processComputeShader(const MaterialLexeme&,
+            filamat::MaterialBuilder& builder) const noexcept;
     bool ignoreLexeme(const MaterialLexeme&, filamat::MaterialBuilder& builder) const noexcept;
 
     bool parseMaterialAsJSON(const char* buffer, size_t size,
@@ -60,11 +62,15 @@ private:
             filamat::MaterialBuilder& builder) const noexcept;
     bool processFragmentShaderJSON(const JsonishValue*,
             filamat::MaterialBuilder& builder) const noexcept;
+    bool processComputeShaderJSON(const JsonishValue*,
+            filamat::MaterialBuilder& builder) const noexcept;
     bool ignoreLexemeJSON(const JsonishValue*, filamat::MaterialBuilder& builder) const noexcept;
     bool isValidJsonStart(const char* buffer, size_t size) const noexcept;
 
     bool compileRawShader(const char* glsl, size_t size, bool isDebug, Config::Output* output,
                 const char* ext) const noexcept;
+
+    bool processMaterialParameters(filamat::MaterialBuilder& builder, const Config& config) const;
 
     // Member function pointer type, this is used to implement a Command design
     // pattern.

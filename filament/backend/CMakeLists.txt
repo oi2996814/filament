@@ -9,23 +9,30 @@ set(GENERATION_ROOT ${CMAKE_CURRENT_BINARY_DIR})
 # Sources and headers
 # ==================================================================================================
 set(PUBLIC_HDRS
+        include/backend/AcquiredImage.h
         include/backend/BufferDescriptor.h
         include/backend/CallbackHandler.h
+        include/backend/DescriptorSetOffsetArray.h
+        include/backend/DriverApiForward.h
         include/backend/DriverEnums.h
         include/backend/Handle.h
         include/backend/PipelineState.h
         include/backend/PixelBufferDescriptor.h
         include/backend/Platform.h
+        include/backend/Program.h
+        include/backend/SamplerDescriptor.h
         include/backend/TargetBufferInfo.h
 )
 
 set(SRCS
         src/BackendUtils.cpp
+        src/BlobCacheKey.cpp
         src/Callable.cpp
-        src/CallbackHandler.cpp
+        src/CallbackManager.cpp
         src/CircularBuffer.cpp
         src/CommandBufferQueue.cpp
         src/CommandStream.cpp
+        src/CompilerThreadPool.cpp
         src/Driver.cpp
         src/Handle.cpp
         src/HandleAllocator.cpp
@@ -33,12 +40,11 @@ set(SRCS
         src/noop/NoopDriver.cpp
         src/noop/PlatformNoop.cpp
         src/Platform.cpp
+        src/PlatformFactory.cpp
         src/Program.cpp
-        src/SamplerGroup.cpp
 )
 
 set(PRIVATE_HDRS
-        include/private/backend/AcquiredImage.h
         include/private/backend/CircularBuffer.h
         include/private/backend/CommandBufferQueue.h
         include/private/backend/CommandStream.h
@@ -46,11 +52,11 @@ set(PRIVATE_HDRS
         include/private/backend/Driver.h
         include/private/backend/DriverApi.h
         include/private/backend/DriverAPI.inc
-        include/private/backend/DriverApiForward.h
         include/private/backend/HandleAllocator.h
-        include/private/backend/Program.h
-        include/private/backend/SamplerGroup.h
+        include/private/backend/PlatformFactory.h
+        src/CallbackManager.h
         src/CommandStreamDispatcher.h
+        src/CompilerThreadPool.h
         src/DataReshaper.h
         src/DriverBase.h
 )
@@ -59,12 +65,21 @@ set(PRIVATE_HDRS
 # OpenGL / OpenGL ES Sources
 # ==================================================================================================
 
-if (FILAMENT_SUPPORTS_OPENGL AND NOT FILAMENT_USE_EXTERNAL_GLES3 AND NOT FILAMENT_USE_SWIFTSHADER)
+if (FILAMENT_SUPPORTS_OPENGL AND NOT FILAMENT_USE_EXTERNAL_GLES3)
     list(APPEND SRCS
+            include/backend/platforms/OpenGLPlatform.h
+            src/opengl/BindingMap.h
             src/opengl/gl_headers.cpp
             src/opengl/gl_headers.h
+            src/opengl/GLBufferObject.h
+            src/opengl/GLDescriptorSet.cpp
+            src/opengl/GLDescriptorSet.h
+            src/opengl/GLDescriptorSetLayout.h
+            src/opengl/GLTexture.h
             src/opengl/GLUtils.cpp
             src/opengl/GLUtils.h
+            src/opengl/OpenGLBlobCache.cpp
+            src/opengl/OpenGLBlobCache.h
             src/opengl/OpenGLContext.cpp
             src/opengl/OpenGLContext.h
             src/opengl/OpenGLDriver.cpp
@@ -75,7 +90,8 @@ if (FILAMENT_SUPPORTS_OPENGL AND NOT FILAMENT_USE_EXTERNAL_GLES3 AND NOT FILAMEN
             src/opengl/OpenGLPlatform.cpp
             src/opengl/OpenGLTimerQuery.cpp
             src/opengl/OpenGLTimerQuery.h
-            include/private/backend/OpenGLPlatform.h
+            src/opengl/ShaderCompilerService.cpp
+            src/opengl/ShaderCompilerService.h
     )
     if (EGL)
         list(APPEND SRCS src/opengl/platforms/PlatformEGL.cpp)
@@ -93,16 +109,19 @@ if (FILAMENT_SUPPORTS_OPENGL AND NOT FILAMENT_USE_EXTERNAL_GLES3 AND NOT FILAMEN
         list(APPEND SRCS src/opengl/platforms/CocoaTouchExternalImage.mm)
     elseif (APPLE)
         list(APPEND SRCS src/opengl/platforms/PlatformCocoaGL.mm)
+        list(APPEND SRCS src/opengl/platforms/CocoaExternalImage.mm)
     elseif (WEBGL)
         list(APPEND SRCS src/opengl/platforms/PlatformWebGL.cpp)
     elseif (LINUX)
         if (FILAMENT_SUPPORTS_X11)
             list(APPEND SRCS src/opengl/platforms/PlatformGLX.cpp)
+        elseif (FILAMENT_SUPPORTS_EGL_ON_LINUX)
+            list(APPEND SRCS src/opengl/platforms/PlatformEGLHeadless.cpp)
+        elseif (FILAMENT_SUPPORTS_OSMESA)
+            list(APPEND SRCS src/opengl/platforms/PlatformOSMesa.cpp)
         endif()
     elseif (WIN32)
         list(APPEND SRCS src/opengl/platforms/PlatformWGL.cpp)
-    else()
-        list(APPEND SRCS src/opengl/platforms/PlatformDummyGL.cpp)
     endif()
 endif()
 
@@ -111,7 +130,7 @@ endif()
 # ==================================================================================================
 
 if (FILAMENT_SUPPORTS_METAL)
-    set(METAL_SRCS
+    set(METAL_OBJC_SRCS
             src/metal/MetalBlitter.mm
             src/metal/MetalBuffer.mm
             src/metal/MetalBufferPool.mm
@@ -120,19 +139,23 @@ if (FILAMENT_SUPPORTS_METAL)
             src/metal/MetalEnums.mm
             src/metal/MetalExternalImage.mm
             src/metal/MetalHandles.mm
-            src/metal/MetalPlatform.mm
-            src/metal/MetalResourceTracker.cpp
+            src/metal/MetalShaderCompiler.mm
             src/metal/MetalState.mm
             src/metal/MetalTimerQuery.mm
             src/metal/MetalUtils.mm
+            src/metal/PlatformMetal.mm
     )
 
-    list(APPEND SRCS ${METAL_SRCS})
+    set(METAL_CPP_SRCS
+            src/metal/MetalResourceTracker.cpp
+    )
+
+    list(APPEND SRCS ${METAL_OBJC_SRCS} ${METAL_CPP_SRCS})
 
     if (IOS)
         # Objective-C++ sources need an additional compiler flag on iOS to disable exceptions.
         set_property(SOURCE
-            ${METAL_SRCS}
+            ${METAL_OBJC_SRCS}
                 src/opengl/platforms/PlatformCocoaTouchGL.mm
                 src/opengl/platforms/CocoaTouchExternalImage.mm
                 src/opengl/platforms/PlatformCocoaGL.mm
@@ -149,6 +172,29 @@ endif()
 # See root CMakeLists.txt for platforms that support Vulkan
 if (FILAMENT_SUPPORTS_VULKAN)
     list(APPEND SRCS
+            include/backend/platforms/VulkanPlatform.h
+            src/vulkan/caching/VulkanDescriptorSetManager.cpp
+            src/vulkan/caching/VulkanDescriptorSetManager.h
+            src/vulkan/caching/VulkanPipelineLayoutCache.cpp
+            src/vulkan/caching/VulkanPipelineLayoutCache.h
+            src/vulkan/memory/ResourceManager.cpp
+            src/vulkan/memory/ResourceManager.h
+            src/vulkan/memory/ResourcePointer.h
+            src/vulkan/memory/Resource.cpp
+            src/vulkan/memory/Resource.h
+            src/vulkan/platform/VulkanPlatform.cpp
+            src/vulkan/platform/VulkanPlatformSwapChainImpl.cpp
+            src/vulkan/platform/VulkanPlatformSwapChainImpl.h
+            src/vulkan/utils/Conversion.cpp
+            src/vulkan/utils/Conversion.h
+            src/vulkan/utils/Definitions.h
+            src/vulkan/utils/Helper.h
+            src/vulkan/utils/Image.h
+            src/vulkan/utils/Image.cpp
+            src/vulkan/utils/Spirv.h
+            src/vulkan/utils/Spirv.cpp
+            src/vulkan/utils/StaticVector.h
+            src/vulkan/VulkanAsyncHandles.h
             src/vulkan/VulkanBlitter.cpp
             src/vulkan/VulkanBlitter.h
             src/vulkan/VulkanBuffer.cpp
@@ -158,8 +204,6 @@ if (FILAMENT_SUPPORTS_VULKAN)
             src/vulkan/VulkanConstants.h
             src/vulkan/VulkanContext.cpp
             src/vulkan/VulkanContext.h
-            src/vulkan/VulkanDisposer.cpp
-            src/vulkan/VulkanDisposer.h
             src/vulkan/VulkanDriver.cpp
             src/vulkan/VulkanDriver.h
             src/vulkan/VulkanDriverFactory.h
@@ -171,33 +215,25 @@ if (FILAMENT_SUPPORTS_VULKAN)
             src/vulkan/VulkanMemory.cpp
             src/vulkan/VulkanPipelineCache.cpp
             src/vulkan/VulkanPipelineCache.h
-            src/vulkan/VulkanPlatform.cpp
-            src/vulkan/VulkanPlatform.h
+            src/vulkan/VulkanQueryManager.cpp
+            src/vulkan/VulkanQueryManager.h
             src/vulkan/VulkanSamplerCache.cpp
             src/vulkan/VulkanSamplerCache.h
             src/vulkan/VulkanStagePool.cpp
             src/vulkan/VulkanStagePool.h
             src/vulkan/VulkanSwapChain.cpp
             src/vulkan/VulkanSwapChain.h
+            src/vulkan/VulkanReadPixels.cpp
+            src/vulkan/VulkanReadPixels.h
             src/vulkan/VulkanTexture.cpp
             src/vulkan/VulkanTexture.h
-            src/vulkan/VulkanUtility.cpp
-            src/vulkan/VulkanUtility.h
     )
-    if (LINUX)
-        if (FILAMENT_SUPPORTS_WAYLAND)
-            list(APPEND SRCS src/vulkan/PlatformVkLinuxWayland.cpp)
-        elseif (FILAMENT_SUPPORTS_X11)
-            list(APPEND SRCS src/vulkan/PlatformVkLinuxX11.cpp)
-        endif()
-    elseif (APPLE AND NOT IOS)
-        list(APPEND SRCS src/vulkan/PlatformVkCocoa.mm)
-    elseif (IOS)
-        list(APPEND SRCS src/vulkan/PlatformVkCocoaTouch.mm)
+    if (LINUX OR WIN32)
+        list(APPEND SRCS src/vulkan/platform/VulkanPlatformLinuxWindows.cpp)
+    elseif (APPLE OR IOS)
+        list(APPEND SRCS src/vulkan/platform/VulkanPlatformApple.mm)
     elseif (ANDROID)
-        list(APPEND SRCS src/vulkan/PlatformVkAndroid.cpp)
-    elseif (WIN32)
-        list(APPEND SRCS src/vulkan/PlatformVkWindows.cpp)
+        list(APPEND SRCS src/vulkan/platform/VulkanPlatformAndroid.cpp)
     endif()
 endif()
 
@@ -220,6 +256,9 @@ add_library(${TARGET} STATIC ${PRIVATE_HDRS} ${PUBLIC_HDRS} ${SRCS})
 
 # specify where the public headers of this library are
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
+
+# add this subproject to the Filament folder
+set_target_properties(${TARGET} PROPERTIES FOLDER Filament)
 
 # ==================================================================================================
 # Expose a header-only target to minimize dependencies.
@@ -266,6 +305,7 @@ set(DUMMY_SRC "${VKSHADERS_DIR}/dummy.c")
 add_custom_command(OUTPUT ${DUMMY_SRC} COMMAND echo "//" > ${DUMMY_SRC})
 
 add_library(vkshaders STATIC ${DUMMY_SRC} ${RESGEN_SOURCE})
+set_target_properties(vkshaders PROPERTIES FOLDER Filament/Generated)
 
 # ==================================================================================================
 # Dependencies
@@ -296,6 +336,7 @@ endif()
 
 if (FILAMENT_SUPPORTS_VULKAN)
     target_link_libraries(${TARGET} PUBLIC bluevk vkmemalloc vkshaders smol-v)
+    target_link_libraries(${TARGET} PRIVATE SPIRV-Headers)
 endif()
 
 if (FILAMENT_SUPPORTS_METAL)
@@ -304,6 +345,9 @@ endif()
 
 if (LINUX)
     target_link_libraries(${TARGET} PRIVATE dl)
+    if(FILAMENT_SUPPORTS_EGL_ON_LINUX)
+       target_link_libraries(${TARGET} PUBLIC EGL)
+    endif()
 endif()
 
 # ==================================================================================================
@@ -319,6 +363,7 @@ elseif(WEBGL)
 else()
     set(OPTIMIZATION_FLAGS
         -ffast-math
+        -fno-finite-math-only
         -ffp-contract=fast
         # TODO: aggressive vectorization is currently broken on Android
         #        -fslp-vectorize-aggressive
@@ -331,16 +376,25 @@ set(LINUX_LINKER_OPTIMIZATION_FLAGS
         -Wl,--exclude-libs,bluegl
 )
 
+if (LINUX AND FILAMENT_SUPPORTS_OSMESA)
+    set(OSMESA_COMPILE_FLAGS
+        -I${FILAMENT_OSMESA_PATH}/include/GL)
+endif()
+
 if (MSVC)
     set(FILAMENT_WARNINGS /W3)
 else()
     set(FILAMENT_WARNINGS
-            -Wall -Wextra -Wno-unused-parameter
+            -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
             -Wextra-semi -Wnewline-eof -Wdeprecated -Wundef
             -Wgnu-conditional-omitted-operand
             -Wweak-vtables -Wnon-virtual-dtor -Wclass-varargs -Wimplicit-fallthrough
-            -Wover-aligned
+            -Wover-aligned -Wreorder-init-list
+            -Werror
     )
+    if (CMAKE_CXX_STANDARD EQUAL 20)
+        list(APPEND FILAMENT_WARNINGS -Wno-deprecated-this-capture)
+    endif()
 endif()
 
 if (APPLE)
@@ -350,6 +404,7 @@ endif()
 
 target_compile_options(${TARGET} PRIVATE
         ${FILAMENT_WARNINGS}
+        ${OSMESA_COMPILE_FLAGS}
         $<$<CONFIG:Release>:${OPTIMIZATION_FLAGS}>
         $<$<AND:$<PLATFORM_ID:Darwin>,$<CONFIG:Release>>:${DARWIN_OPTIMIZATION_FLAGS}>
 )
@@ -359,6 +414,7 @@ if (FILAMENT_SUPPORTS_METAL)
 endif()
 
 target_link_libraries(${TARGET} PRIVATE
+        ${OSMESA_LINKER_FLAGS}
         $<$<AND:$<PLATFORM_ID:Linux>,$<CONFIG:Release>>:${LINUX_LINKER_OPTIMIZATION_FLAGS}>
 )
 
@@ -375,8 +431,8 @@ install(DIRECTORY ${PUBLIC_HDR_DIR}/backend DESTINATION include)
 # ==================================================================================================
 option(INSTALL_BACKEND_TEST "Install the backend test library so it can be consumed on iOS" OFF)
 
-if (APPLE)
-    add_library(backend_test STATIC
+if (APPLE OR LINUX)
+    set(BACKEND_TEST_SRC
         test/BackendTest.cpp
         test/ShaderGenerator.cpp
         test/TrianglePrimitive.cpp
@@ -386,20 +442,34 @@ if (APPLE)
         test/test_MissingRequiredAttributes.cpp
         test/test_ReadPixels.cpp
         test/test_BufferUpdates.cpp
+        test/test_Callbacks.cpp
         test/test_MRT.cpp
+        test/test_PushConstants.cpp
         test/test_LoadImage.cpp
-        test/test_RenderExternalImage.cpp
-        )
-
-    target_link_libraries(backend_test PRIVATE
+        test/test_StencilBuffer.cpp
+        test/test_Scissor.cpp
+        test/test_MipLevels.cpp
+        test/test_Handles.cpp
+    )
+    set(BACKEND_TEST_LIBS
         backend
         getopt
         gtest
+        imageio
+        filamat
         SPIRV
         spirv-cross-glsl)
+endif()
+
+# TODO: Disabling IOS test due to breakage wrt glslang update
+if (APPLE AND NOT IOS)
+    # TODO: we should expand this test to Linux and other platforms.
+    list(APPEND BACKEND_TEST_SRC
+         test/test_RenderExternalImage.cpp)
+    add_library(backend_test STATIC ${BACKEND_TEST_SRC})
+    target_link_libraries(backend_test PRIVATE ${BACKEND_TEST_LIBS})
 
     set(BACKEND_TEST_DEPS
-            OGLCompiler
             OSDependent
             SPIRV
             SPIRV-Tools
@@ -410,12 +480,11 @@ if (APPLE)
             glslang
             spirv-cross-core
             spirv-cross-glsl
-            spirv-cross-msl
-            )
+            spirv-cross-msl)
 
     if (NOT IOS)
         target_link_libraries(backend_test PRIVATE image imageio)
-        list(APPEND BACKEND_TEST_DEPS image imageio)
+        list(APPEND BACKEND_TEST_DEPS image)
     endif()
 
     set(BACKEND_TEST_COMBINED_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/libbackendtest_combined.a")
@@ -427,26 +496,65 @@ if (APPLE)
         install(FILES "${BACKEND_TEST_COMBINED_OUTPUT}" DESTINATION lib/${DIST_DIR} RENAME ${BACKEND_TEST_LIB_NAME})
         install(FILES test/PlatformRunner.h DESTINATION include/backend_test)
     endif()
+
+    set_target_properties(backend_test PROPERTIES FOLDER Tests)
+
+    if (APPLE AND NOT IOS)
+       add_executable(backend_test_mac test/mac_runner.mm)
+       target_link_libraries(backend_test_mac PRIVATE "-framework Metal -framework AppKit -framework QuartzCore")
+       # Because each test case is a separate file, the -force_load flag is necessary to prevent the
+       # linker from removing "unused" symbols.
+       target_link_libraries(backend_test_mac PRIVATE -force_load backend_test)
+       set_target_properties(backend_test_mac PROPERTIES FOLDER Tests)
+
+       # This is needed after XCode 15.3
+       set_target_properties(backend_test_mac PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
+       set_target_properties(backend_test_mac PROPERTIES INSTALL_RPATH /usr/local/lib)
+    endif()
 endif()
+
+if (LINUX)
+    add_executable(backend_test_linux test/linux_runner.cpp ${BACKEND_TEST_SRC})
+    target_link_libraries(backend_test_linux PRIVATE ${BACKEND_TEST_LIBS})
+    set_target_properties(backend_test_linux PROPERTIES FOLDER Tests)
+endif()
+
+# ==================================================================================================
+# Compute tests
+#
+#if (NOT IOS AND NOT WEBGL)
+#
+#add_executable(compute_test
+#        test/ComputeTest.cpp
+#        test/Arguments.cpp
+#        test/test_ComputeBasic.cpp
+#        )
+#
+#target_link_libraries(compute_test PRIVATE
+#        backend
+#        getopt
+#        gtest
+#        )
+#
+#set_target_properties(compute_test PROPERTIES FOLDER Tests)
+#
+#endif()
+
+# ==================================================================================================
+# Metal utils tests
 
 if (APPLE AND NOT IOS)
-    add_executable(backend_test_mac test/mac_runner.mm)
-    target_link_libraries(backend_test_mac PRIVATE "-framework Metal -framework AppKit -framework QuartzCore")
-    # Because each test case is a separate file, the -force_load flag is necessary to prevent the
-    # linker from removing "unused" symbols.
-    target_link_libraries(backend_test_mac PRIVATE -force_load backend_test)
-endif()
 
-if (APPLE AND NOT Vulkan_LIBRARY AND NOT FILAMENT_USE_SWIFTSHADER)
-    message(STATUS "No Vulkan SDK was found, using prebuilt MoltenVK.")
-    set(MOLTENVK_DIR "../../third_party/moltenvk")
-    configure_file(
-            ${MOLTENVK_DIR}/libvulkan.1.dylib
-            ${PROJECT_BINARY_DIR}/libvulkan.1.dylib COPYONLY)
-    configure_file(
-            ${MOLTENVK_DIR}/MoltenVK_icd.json
-            ${PROJECT_BINARY_DIR}/MoltenVK_icd.json COPYONLY)
-    configure_file(
-            ${MOLTENVK_DIR}/libMoltenVK.dylib
-            ${PROJECT_BINARY_DIR}/libMoltenVK.dylib COPYONLY)
+add_executable(metal_utils_test test/MetalTest.mm)
+
+target_compile_options(metal_utils_test PRIVATE "-fobjc-arc")
+
+target_link_libraries(metal_utils_test PRIVATE
+        backend
+        getopt
+        gtest
+        )
+
+set_target_properties(metal_utils_test PROPERTIES FOLDER Tests)
+
 endif()

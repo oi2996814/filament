@@ -35,12 +35,9 @@ static const constexpr uint64_t PUMP_INTERVAL_MILLISECONDS = 1;
 using ms = std::chrono::milliseconds;
 using ns = std::chrono::nanoseconds;
 
-FFence::FFence(FEngine& engine, Type type)
-    : mEngine(engine), mFenceSignal(std::make_shared<FenceSignal>(type)) {
+FFence::FFence(FEngine& engine)
+    : mEngine(engine), mFenceSignal(std::make_shared<FenceSignal>()) {
     DriverApi& driverApi = engine.getDriverApi();
-    if (type == Type::HARD) {
-        mFenceHandle = driverApi.createFence();
-    }
 
     // we have to first wait for the fence to be signaled by the command stream
     auto& fs = mFenceSignal;
@@ -49,29 +46,23 @@ FFence::FFence(FEngine& engine, Type type)
     });
 }
 
-void FFence::terminate(FEngine& engine) noexcept {
+void FFence::terminate(FEngine&) noexcept {
     FenceSignal * const fs = mFenceSignal.get();
     fs->signal(FenceSignal::DESTROYED);
-    if (fs->mType == Type::HARD) {
-        if (mFenceHandle) {
-            FEngine::DriverApi& driver = engine.getDriverApi();
-            driver.destroyFence(mFenceHandle);
-            mFenceHandle.clear();
-        }
-    }
 }
 
 UTILS_NOINLINE
-FenceStatus FFence::waitAndDestroy(FFence* fence, Mode mode) noexcept {
+FenceStatus FFence::waitAndDestroy(FFence* fence, Mode const mode) noexcept {
     assert_invariant(fence);
-    FenceStatus status = fence->wait(mode, FENCE_WAIT_FOR_EVER);
+    FenceStatus const status = fence->wait(mode, FENCE_WAIT_FOR_EVER);
     fence->mEngine.destroy(fence);
     return status;
 }
 
 UTILS_NOINLINE
-FenceStatus FFence::wait(Mode mode, uint64_t timeout) noexcept {
-    ASSERT_PRECONDITION(UTILS_HAS_THREADING || timeout == 0, "Non-zero timeout requires threads.");
+FenceStatus FFence::wait(Mode const mode, uint64_t const timeout) noexcept {
+    FILAMENT_CHECK_PRECONDITION(UTILS_HAS_THREADING || timeout == 0)
+            << "Non-zero timeout requires threads.";
 
     FEngine& engine = mEngine;
 
@@ -107,29 +98,25 @@ FenceStatus FFence::wait(Mode mode, uint64_t timeout) noexcept {
         return status;
     }
 
-    if (fs->mType == Type::HARD) {
-        // note: even if the driver doesn't support h/w fences, mFenceHandle will be valid
-        status = engine.getDriverApi().wait(mFenceHandle, timeout);
-    }
     return status;
 }
 
 UTILS_NOINLINE
-void FFence::FenceSignal::signal(State s) noexcept {
-    std::lock_guard<utils::Mutex> lock(FFence::sLock);
+void FFence::FenceSignal::signal(State const s) noexcept {
+    std::lock_guard<utils::Mutex> const lock(sLock);
     mState = s;
-    FFence::sCondition.notify_all();
+    sCondition.notify_all();
 }
 
 UTILS_NOINLINE
-Fence::FenceStatus FFence::FenceSignal::wait(uint64_t timeout) noexcept {
-    std::unique_lock<utils::Mutex> lock(FFence::sLock);
+Fence::FenceStatus FFence::FenceSignal::wait(uint64_t const timeout) noexcept {
+    std::unique_lock<utils::Mutex> lock(sLock);
     while (mState == UNSIGNALED) {
         if (mState == DESTROYED) {
             return FenceStatus::ERROR;
         }
         if (timeout == FENCE_WAIT_FOR_EVER) {
-            FFence::sCondition.wait(lock);
+            sCondition.wait(lock);
         } else {
             if (timeout == 0 ||
                     sCondition.wait_for(lock, ns(timeout)) == std::cv_status::timeout) {

@@ -24,24 +24,35 @@
 #include <private/filament/Variant.h>
 
 #include <tsl/robin_map.h>
+#include <utils/Mutex.h>
 
 class CivetServer;
 
-namespace filament {
-namespace matdbg {
+namespace filament::matdbg {
 
 using MaterialKey = uint32_t;
+
+struct MaterialRecord {
+    void* userdata;
+    const uint8_t* package;
+    size_t packageSize;
+    utils::CString name;
+    MaterialKey key;
+    VariantList activeVariants;
+};
 
 /**
  * Server-side material debugger.
  *
- * This class manages an HTTP server and a WebSockets server that listen on a secondary thread. It
- * receives material packages from the Filament C++ engine or from a standalone tool such as
- * matinfo.
+ * This class manages an HTTP server. It receives material packages from the Filament C++ engine or
+ * from a standalone tool such as matinfo.
  */
 class DebugServer {
 public:
-    DebugServer(backend::Backend backend, int port);
+    static std::string_view const kSuccessHeader;
+    static std::string_view const kErrorHeader;
+
+    DebugServer(backend::Backend backend, backend::ShaderLanguage shaderLanguage, int port);
     ~DebugServer();
 
     /**
@@ -74,16 +85,7 @@ public:
     bool isReady() const { return mServer; }
 
 private:
-    struct MaterialRecord {
-        void* userdata;
-        const uint8_t* package;
-        size_t packageSize;
-        utils::CString name;
-        MaterialKey key;
-        VariantList activeVariants;
-    };
-
-    const MaterialRecord* getRecord(const MaterialKey& key) const;
+    MaterialRecord const* getRecord(const MaterialKey& key) const;
 
     void updateActiveVariants();
 
@@ -95,9 +97,13 @@ private:
             const char* newShaderContent, size_t newShaderLength);
 
     const backend::Backend mBackend;
+    const backend::ShaderLanguage mShaderLanguage;
 
     CivetServer* mServer;
+
     tsl::robin_map<MaterialKey, MaterialRecord> mMaterialRecords;
+    mutable utils::Mutex mMaterialRecordsMutex;
+
     utils::CString mHtml;
     utils::CString mJavascript;
     utils::CString mCss;
@@ -109,15 +115,12 @@ private:
     QueryCallback mQueryCallback = nullptr;
 
     class FileRequestHandler* mFileHandler = nullptr;
-    class RestRequestHandler* mRestHandler = nullptr;
-    class WebSocketHandler* mWebSocketHandler = nullptr;
+    class ApiHandler* mApiHandler = nullptr;
 
     friend class FileRequestHandler;
-    friend class RestRequestHandler;
-    friend class WebSocketHandler;
+    friend class ApiHandler;
 };
 
-} // namespace matdbg
-} // namespace filament
+} // namespace filament::matdbg
 
 #endif  // MATDBG_DEBUGSERVER_H

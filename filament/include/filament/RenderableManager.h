@@ -26,10 +26,17 @@
 
 #include <utils/compiler.h>
 #include <utils/EntityInstance.h>
+#include <utils/FixedCapacityVector.h>
 
 #include <math/mathfwd.h>
+#include <math/vec3.h>
+#include <math/vec4.h>
 
 #include <type_traits>
+
+#include <float.h>
+#include <stddef.h>
+#include <stdint.h>
 
 namespace utils {
     class Entity;
@@ -40,12 +47,12 @@ namespace filament {
 class BufferObject;
 class Engine;
 class IndexBuffer;
-class Material;
 class MaterialInstance;
 class Renderer;
 class SkinningBuffer;
 class VertexBuffer;
 class Texture;
+class InstanceBuffer;
 
 class FEngine;
 class FRenderPrimitive;
@@ -102,6 +109,29 @@ public:
     Instance getInstance(utils::Entity e) const noexcept;
 
     /**
+     * @return the number of Components
+     */
+    size_t getComponentCount() const noexcept;
+
+    /**
+     * @return true if the this manager has no components
+     */
+    bool empty() const noexcept;
+
+    /**
+     * Retrieve the `Entity` of the component from its `Instance`.
+     * @param i Instance of the component obtained from getInstance()
+     * @return
+     */
+    utils::Entity getEntity(Instance i) const noexcept;
+
+    /**
+     * Retrieve the Entities of all the components of this manager.
+     * @return A list, in no particular order, of all the entities managed by this manager.
+     */
+    utils::Entity const* UTILS_NONNULL getEntities() const noexcept;
+
+    /**
      * The transformation associated with a skinning joint.
      *
      * Clients can specify bones either using this quat-vec3 pair, or by using 4x4 matrices.
@@ -119,6 +149,21 @@ public:
         friend struct BuilderDetails;
     public:
         enum Result { Error = -1, Success = 0  };
+
+        /**
+         * Default render channel
+         * @see Builder::channel()
+         */
+        static constexpr uint8_t DEFAULT_CHANNEL = 2u;
+
+        /**
+         * Type of geometry for a Renderable
+         */
+        enum class GeometryType : uint8_t {
+            DYNAMIC,        //!< dynamic gemoetry has no restriction
+            STATIC_BOUNDS,  //!< bounds and world space transform are immutable
+            STATIC          //!< skinning/morphing not allowed and Vertex/IndexBuffer immutables
+        };
 
         /**
          * Creates a builder for renderable components.
@@ -154,19 +199,48 @@ public:
          * @param maxIndex specifies the maximum index contained in the index buffer
          * @param count number of indices to read (for triangles, this should be a multiple of 3)
          */
-        Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices, size_t offset, size_t minIndex, size_t maxIndex, size_t count) noexcept;
-        Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices, size_t offset, size_t count) noexcept; //!< \overload
-        Builder& geometry(size_t index, PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices) noexcept; //!< \overload
+        Builder& geometry(size_t index, PrimitiveType type,
+                VertexBuffer* UTILS_NONNULL vertices,
+                IndexBuffer* UTILS_NONNULL indices,
+                size_t offset, size_t minIndex, size_t maxIndex, size_t count) noexcept;
+
+        Builder& geometry(size_t index, PrimitiveType type,
+                VertexBuffer* UTILS_NONNULL vertices,
+                IndexBuffer* UTILS_NONNULL indices,
+                size_t offset, size_t count) noexcept; //!< \overload
+
+        Builder& geometry(size_t index, PrimitiveType type,
+                VertexBuffer* UTILS_NONNULL vertices,
+                IndexBuffer* UTILS_NONNULL indices) noexcept; //!< \overload
+
+
+        /**
+         * Specify the type of geometry for this renderable. DYNAMIC geometry has no restriction,
+         * STATIC_BOUNDS geometry means that both the bounds and the world-space transform of the
+         * the renderable are immutable.
+         * STATIC geometry has the same restrictions as STATIC_BOUNDS, but in addition disallows
+         * skinning, morphing and changing the VertexBuffer or IndexBuffer in any way.
+         * @param type type of geometry.
+         */
+        Builder& geometryType(GeometryType type) noexcept;
 
         /**
          * Binds a material instance to the specified primitive.
          *
-         * If no material is specified for a given primitive, Filament will fall back to a basic default material.
+         * If no material is specified for a given primitive, Filament will fall back to a basic
+         * default material.
          *
-         * @param index zero-based index of the primitive, must be less than the count passed to Builder constructor
+         * The MaterialInstance's material must have a feature level equal or lower to the engine's
+         * selected feature level.
+         *
+         * @param index zero-based index of the primitive, must be less than the count passed to
+         * Builder constructor
          * @param materialInstance the material to bind
+         *
+         * @see Engine::setActiveFeatureLevel
          */
-        Builder& material(size_t index, MaterialInstance const* materialInstance) noexcept;
+        Builder& material(size_t index,
+                MaterialInstance const* UTILS_NONNULL materialInstance) noexcept;
 
         /**
          * The axis-aligned bounding box of the renderable.
@@ -200,17 +274,46 @@ public:
          *
          * In general Filament reserves the right to re-order renderables to allow for efficient
          * rendering. However clients can control ordering at a coarse level using \em priority.
+         * The priority is applied separately for opaque and translucent objects, that is, opaque
+         * objects are always drawn before translucent objects regardless of the priority.
          *
-         * For example, this could be used to draw a semitransparent HUD, if a client wishes to
-         * avoid using a separate View for the HUD. Note that priority is completely orthogonal to
+         * For example, this could be used to draw a semitransparent HUD on top of everything,
+         * without using a separate View. Note that priority is completely orthogonal to
          * Builder::layerMask, which merely controls visibility.
          *
-         * \see Builder::blendOrder()
+         * The Skybox always using the lowest priority, so it's drawn last, which may improve
+         * performance.
          *
-         * The priority is clamped to the range [0..7], defaults to 4; 7 is lowest priority
-         * (rendered last).
+         * @param priority clamped to the range [0..7], defaults to 4; 7 is lowest priority
+         *                 (rendered last).
+         *
+         * @return Builder reference for chaining calls.
+         *
+         * @see Builder::blendOrder()
+         * @see Builder::channel()
+         * @see RenderableManager::setPriority()
+         * @see RenderableManager::setBlendOrderAt()
          */
         Builder& priority(uint8_t priority) noexcept;
+
+        /**
+         * Set the channel this renderable is associated to. There can be 4 channels.
+         * All renderables in a given channel are rendered together, regardless of anything else.
+         * They are sorted as usual within a channel.
+         * Channels work similarly to priorities, except that they enforce the strongest ordering.
+         *
+         * Channels 0 and 1 may not have render primitives using a material with `refractionType`
+         * set to `screenspace`.
+         *
+         * @param channel clamped to the range [0..3], defaults to 2.
+         *
+         * @return Builder reference for chaining calls.
+         *
+         * @see Builder::blendOrder()
+         * @see Builder::priority()
+         * @see RenderableManager::setBlendOrderAt()
+         */
+        Builder& channel(uint8_t channel) noexcept;
 
         /**
          * Controls frustum culling, true by default.
@@ -262,6 +365,14 @@ public:
         Builder& enableSkinningBuffers(bool enabled = true) noexcept;
 
         /**
+         * Controls if this renderable is affected by the large-scale fog.
+         * @param enabled If true, enables large-scale fog on this object. Disables it otherwise.
+         *                True by default.
+         * @return A reference to this Builder for chaining calls.
+         */
+        Builder& fog(bool enabled = true) noexcept;
+
+        /**
          * Enables GPU vertex skinning for up to 255 bones, 0 by default.
          *
          * Skinning Buffer mode must be enabled.
@@ -277,7 +388,8 @@ public:
          * @param count 0 to disable, otherwise the number of bone transforms (up to 255)
          * @param offset offset in the SkinningBuffer
          */
-        Builder& skinning(SkinningBuffer* skinningBuffer, size_t count, size_t offset) noexcept;
+        Builder& skinning(SkinningBuffer* UTILS_NONNULL skinningBuffer,
+                size_t count, size_t offset) noexcept;
 
 
         /**
@@ -295,19 +407,67 @@ public:
          * @param boneCount 0 to disable, otherwise the number of bone transforms (up to 255)
          * @param transforms the initial set of transforms (one for each bone)
          */
-        Builder& skinning(size_t boneCount, math::mat4f const* transforms) noexcept;
-        Builder& skinning(size_t boneCount, Bone const* bones) noexcept; //!< \overload
+        Builder& skinning(size_t boneCount, math::mat4f const* UTILS_NONNULL transforms) noexcept;
+        Builder& skinning(size_t boneCount, Bone const* UTILS_NONNULL bones) noexcept; //!< \overload
         Builder& skinning(size_t boneCount) noexcept; //!< \overload
 
         /**
-         * Controls if the renderable has vertex morphing targets, zero by default. This is
+         * Define bone indices and weights "pairs" for vertex skinning as a float2.
+         * The unsigned int(pair.x) defines index of the bone and pair.y is the bone weight.
+         * The pairs substitute \c BONE_INDICES and the \c BONE_WEIGHTS defined in the VertexBuffer.
+         * Both ways of indices and weights definition must not be combined in one primitive.
+         * Number of pairs per vertex bonesPerVertex is not limited to 4 bones.
+         * Vertex buffer used for \c primitiveIndex must be set for advance skinning.
+         * All bone weights of one vertex should sum to one. Otherwise they will be normalized.
+         * Data must be rectangular and number of bone pairs must be same for all vertices of this
+         * primitive.
+         * The data is arranged sequentially, all bone pairs for the first vertex, then for the
+         * second vertex, and so on.
+         *
+         * @param primitiveIndex zero-based index of the primitive, must be less than the primitive
+         *                       count passed to Builder constructor
+         * @param indicesAndWeights pairs of bone index and bone weight for all vertices
+         *                          sequentially
+         * @param count number of all pairs, must be a multiple of vertexCount of the primitive
+         *                          count = vertexCount * bonesPerVertex
+         * @param bonesPerVertex number of bone pairs, same for all vertices of the primitive
+         *
+         * @return Builder reference for chaining calls.
+         *
+         * @see VertexBuffer:Builder:advancedSkinning
+         */
+        Builder& boneIndicesAndWeights(size_t primitiveIndex,
+                math::float2 const* UTILS_NONNULL indicesAndWeights,
+                size_t count, size_t bonesPerVertex) noexcept;
+
+        /**
+         * Define bone indices and weights "pairs" for vertex skinning as a float2.
+         * The unsigned int(pair.x) defines index of the bone and pair.y is the bone weight.
+         * The pairs substitute \c BONE_INDICES and the \c BONE_WEIGHTS defined in the VertexBuffer.
+         * Both ways of indices and weights definition must not be combined in one primitive.
+         * Number of pairs is not limited to 4 bones per vertex.
+         * Vertex buffer used for \c primitiveIndex must be set for advance skinning.
+         * All bone weights of one vertex should sum to one. Otherwise they will be normalized.
+         * Data doesn't have to be rectangular and number of pairs per vertices of primitive can be
+         * variable.
+         * The vector of the vertices contains the vectors of the pairs
+         *
+         * @param primitiveIndex zero-based index of the primitive, must be less than the primitive
+         *                       count passed to Builder constructor
+         * @param indicesAndWeightsVector pairs of bone index and bone weight for all vertices of
+         *                                 the primitive sequentially
+         *
+         * @return Builder reference for chaining calls.
+         *
+         * @see VertexBuffer:Builder:advancedSkinning
+         */
+        Builder& boneIndicesAndWeights(size_t primitiveIndex,
+                utils::FixedCapacityVector<
+                    utils::FixedCapacityVector<math::float2>> indicesAndWeightsVector) noexcept;
+
+        /**
+         * Controls if the renderable has legacy vertex morphing targets, zero by default. This is
          * required to enable GPU morphing.
-         *
-         * Filament supports two morphing modes: standard (default) and legacy.
-         *
-         * For standard morphing, A MorphTargetBuffer must be created and provided via
-         * RenderableManager::setMorphTargetBufferAt(). Standard morphing supports up to
-         * \c CONFIG_MAX_MORPH_TARGET_COUNT morph targets.
          *
          * For legacy morphing, the attached VertexBuffer must provide data in the
          * appropriate VertexAttribute slots (\c MORPH_POSITION_0 etc). Legacy morphing only
@@ -321,44 +481,97 @@ public:
         Builder& morphing(size_t targetCount) noexcept;
 
         /**
-         * Specifies the morph target buffer for a primitive.
+         * Controls if the renderable has vertex morphing targets, zero by default. This is
+         * required to enable GPU morphing.
          *
-         * The morph target buffer must have an associated renderable and geometry. Two conditions
-         * must be met:
-         * 1. The number of morph targets in the buffer must equal the renderable's morph target
-         *    count.
-         * 2. The vertex count of each morph target must equal the geometry's vertex count.
+         * Filament supports two morphing modes: standard (default) and legacy.
+         *
+         * For standard morphing, A MorphTargetBuffer must be provided.
+         * Standard morphing supports up to \c CONFIG_MAX_MORPH_TARGET_COUNT morph targets.
+         *
+         * See also RenderableManager::setMorphWeights(), which can be called on a per-frame basis
+         * to advance the animation.
+         */
+        Builder& morphing(MorphTargetBuffer* UTILS_NONNULL morphTargetBuffer) noexcept;
+
+        /**
+         * Specifies the the range of the MorphTargetBuffer to use with this primitive.
          *
          * @param level the level of detail (lod), only 0 can be specified
          * @param primitiveIndex zero-based index of the primitive, must be less than the count passed to Builder constructor
-         * @param morphTargetBuffer specifies the morph target buffer
          * @param offset specifies where in the morph target buffer to start reading (expressed as a number of vertices)
-         * @param count number of vertices in the morph target buffer to read, must equal the geometry's count (for triangles, this should be a multiple of 3)
          */
-        Builder& morphing(uint8_t level, size_t primitiveIndex,
-                MorphTargetBuffer* morphTargetBuffer, size_t offset, size_t count) noexcept;
-        inline Builder& morphing(uint8_t level, size_t primitiveIndex,
-                MorphTargetBuffer* morphTargetBuffer) noexcept;
+        Builder& morphing(uint8_t level,
+                size_t primitiveIndex, size_t offset) noexcept;
+
 
         /**
-         * Sets an ordering index for blended primitives that all live at the same Z value.
+         * Sets the drawing order for blended primitives. The drawing order is either global or
+         * local (default) to this Renderable. In either case, the Renderable priority takes
+         * precedence.
          *
          * @param primitiveIndex the primitive of interest
          * @param order draw order number (0 by default). Only the lowest 15 bits are used.
+         *
+         * @return Builder reference for chaining calls.
+         *
+         * @see globalBlendOrderEnabled
          */
         Builder& blendOrder(size_t primitiveIndex, uint16_t order) noexcept;
 
         /**
-         * Specifies the number of draw instance of this renderable. The default is 1 instance and
-         * the maximum number of instances allowed is 65535. 0 is invalid.
+         * Sets whether the blend order is global or local to this Renderable (by default).
+         *
+         * @param primitiveIndex the primitive of interest
+         * @param enabled true for global, false for local blend ordering.
+         *
+         * @return Builder reference for chaining calls.
+         *
+         * @see blendOrder
+         */
+        Builder& globalBlendOrderEnabled(size_t primitiveIndex, bool enabled) noexcept;
+
+        /**
+         * Specifies the number of draw instances of this renderable. The default is 1 instance and
+         * the maximum number of instances allowed is 32767. 0 is invalid.
+         *
          * All instances are culled using the same bounding box, so care must be taken to make
          * sure all instances render inside the specified bounding box.
-         * The material can use getInstanceIndex() in the vertex shader to get the instance index and
+         *
+         * The material must set its `instanced` parameter to `true` in order to use
+         * getInstanceIndex() in the vertex or fragment shader to get the instance index and
          * possibly adjust the position or transform.
          *
-         * @param instanceCount the number of instances silently clamped between 1 and 65535.
+         * @param instanceCount the number of instances silently clamped between 1 and 32767.
          */
         Builder& instances(size_t instanceCount) noexcept;
+
+        /**
+         * Specifies the number of draw instances of this renderable and an \c InstanceBuffer
+         * containing their local transforms. The default is 1 instance and the maximum number of
+         * instances allowed when supplying transforms is given by
+         * \c Engine::getMaxAutomaticInstances (64 on most platforms). 0 is invalid. The
+         * \c InstanceBuffer must not be destroyed before this renderable.
+         *
+         * All instances are culled using the same bounding box, so care must be taken to make
+         * sure all instances render inside the specified bounding box.
+         *
+         * The material must set its `instanced` parameter to `true` in order to use
+         * \c getInstanceIndex() in the vertex or fragment shader to get the instance index.
+         *
+         * Only the \c VERTEX_DOMAIN_OBJECT vertex domain is supported.
+         *
+         * The local transforms of each instance can be updated with
+         * \c InstanceBuffer::setLocalTransforms.
+         *
+         * \see InstanceBuffer
+         * \see instances(size_t, * math::mat4f const*)
+         * @param instanceCount the number of instances, silently clamped between 1 and
+         *                      the result of Engine::getMaxAutomaticInstances().
+         * @param instanceBuffer an InstanceBuffer containing at least instanceCount transforms
+         */
+        Builder& instances(size_t instanceCount,
+                InstanceBuffer* UTILS_NONNULL instanceBuffer) noexcept;
 
         /**
          * Adds the Renderable component to an entity.
@@ -384,22 +597,6 @@ public:
         friend class FEngine;
         friend class FRenderPrimitive;
         friend class FRenderableManager;
-        struct Entry {
-            VertexBuffer* vertices = nullptr;
-            IndexBuffer* indices = nullptr;
-            size_t offset = 0;
-            size_t minIndex = 0;
-            size_t maxIndex = 0;
-            size_t count = 0;
-            MaterialInstance const* materialInstance = nullptr;
-            PrimitiveType type = PrimitiveType::TRIANGLES;
-            uint16_t blendOrder = 0;
-            struct {
-                MorphTargetBuffer* buffer = nullptr;
-                size_t offset = 0;
-                size_t count = 0;
-            } morphing;
-        };
     };
 
     /**
@@ -409,11 +606,12 @@ public:
 
     /**
      * Changes the bounding box used for frustum culling.
+     * The renderable must not have staticGeometry enabled.
      *
      * \see Builder::boundingBox()
      * \see RenderableManager::getAxisAlignedBoundingBox()
      */
-    void setAxisAlignedBoundingBox(Instance instance, const Box& aabb) noexcept;
+    void setAxisAlignedBoundingBox(Instance instance, const Box& aabb);
 
     /**
      * Changes the visibility bits.
@@ -432,11 +630,31 @@ public:
     void setPriority(Instance instance, uint8_t priority) noexcept;
 
     /**
+     * Changes the channel a renderable is associated to.
+     *
+     * \see Builder::channel().
+     */
+    void setChannel(Instance instance, uint8_t channel) noexcept;
+
+    /**
      * Changes whether or not frustum culling is on.
      *
      * \see Builder::culling()
      */
     void setCulling(Instance instance, bool enable) noexcept;
+
+    /**
+     * Changes whether or not the large-scale fog is applied to this renderable
+     * @see Builder::fog()
+     */
+    void setFogEnabled(Instance instance, bool enable) noexcept;
+
+    /**
+     * Returns whether large-scale fog is enabled for this renderable.
+     * @return True if fog is enabled for this renderable.
+     * @see Builder::fog()
+     */
+    bool getFogEnabled(Instance instance) const noexcept;
 
     /**
      * Enables or disables a light channel.
@@ -493,13 +711,24 @@ public:
      * Updates the bone transforms in the range [offset, offset + boneCount).
      * The bones must be pre-allocated using Builder::skinning().
      */
-    void setBones(Instance instance, Bone const* transforms, size_t boneCount = 1, size_t offset = 0);
-    void setBones(Instance instance, math::mat4f const* transforms, size_t boneCount = 1, size_t offset = 0); //!< \overload
+    void setBones(Instance instance, Bone const* UTILS_NONNULL transforms,
+            size_t boneCount = 1, size_t offset = 0);
+
+    void setBones(Instance instance, math::mat4f const* UTILS_NONNULL transforms,
+            size_t boneCount = 1, size_t offset = 0); //!< \overload
 
     /**
-     * Associates a SkinningBuffer to a renderable instance
+     * Associates a region of a SkinningBuffer to a renderable instance
+     *
+     * Note: due to hardware limitations offset + 256 must be smaller or equal to
+     *       skinningBuffer->getBoneCount()
+     *
+     * @param instance          Instance of the component obtained from getInstance().
+     * @param skinningBuffer    skinning buffer to associate to the instance
+     * @param count             Size of the region in bones, must be smaller or equal to 256.
+     * @param offset            Start offset of the region in bones
      */
-    void setSkinningBuffer(Instance instance, SkinningBuffer* skinningBuffer,
+    void setSkinningBuffer(Instance instance, SkinningBuffer* UTILS_NONNULL skinningBuffer,
             size_t count, size_t offset);
 
     /**
@@ -511,22 +740,21 @@ public:
      * @param instance Instance of the component obtained from getInstance().
      * @param weights Pointer to morph target weights to be update.
      * @param count Number of morph target weights.
-     * @param offset Index of the first first morph target weight to set at instance.
+     * @param offset Index of the first morph target weight to set at instance.
      */
     void setMorphWeights(Instance instance,
-            float const* weights, size_t count, size_t offset = 0);
+            float const* UTILS_NONNULL weights, size_t count, size_t offset = 0);
 
     /**
      * Associates a MorphTargetBuffer to the given primitive.
      */
-    void setMorphTargetBufferAt(Instance instance, uint8_t level, size_t primitiveIndex,
-            MorphTargetBuffer* morphTargetBuffer, size_t offset, size_t count);
+    void setMorphTargetBufferOffsetAt(Instance instance, uint8_t level, size_t primitiveIndex,
+            size_t offset);
 
     /**
-     * Utility method to change a MorphTargetBuffer to the given primitive
+     * Get a MorphTargetBuffer to the given renderable or null if it doesn't exist.
      */
-    inline void setMorphTargetBufferAt(Instance instance, uint8_t level, size_t primitiveIndex,
-            MorphTargetBuffer* morphTargetBuffer);
+    MorphTargetBuffer* UTILS_NULLABLE getMorphTargetBuffer(Instance instance) const noexcept;
 
     /**
      * Gets the number of morphing in the given entity.
@@ -558,43 +786,63 @@ public:
     /**
      * Changes the material instance binding for the given primitive.
      *
-     * \see Builder::material()
+     * The MaterialInstance's material must have a feature level equal or lower to the engine's
+     * selected feature level.
+     *
+     * @exception utils::PreConditionPanic if the engine doesn't support the material's
+     *                                     feature level.
+     *
+     * @see Builder::material()
+     * @see Engine::setActiveFeatureLevel
      */
     void setMaterialInstanceAt(Instance instance,
-            size_t primitiveIndex, MaterialInstance const* materialInstance) noexcept;
+            size_t primitiveIndex, MaterialInstance const* UTILS_NONNULL materialInstance);
+
+    /**
+     * Clear the MaterialInstance for the given primitive.
+     * @param instance Renderable's instance
+     * @param primitiveIndex Primitive index
+     */
+    void clearMaterialInstanceAt(Instance instance, size_t primitiveIndex);
 
     /**
      * Retrieves the material instance that is bound to the given primitive.
      */
-    MaterialInstance* getMaterialInstanceAt(Instance instance, size_t primitiveIndex) const noexcept;
+    MaterialInstance* UTILS_NULLABLE getMaterialInstanceAt(
+            Instance instance, size_t primitiveIndex) const noexcept;
 
     /**
      * Changes the geometry for the given primitive.
      *
      * \see Builder::geometry()
      */
-    void setGeometryAt(Instance instance, size_t primitiveIndex,
-            PrimitiveType type, VertexBuffer* vertices, IndexBuffer* indices,
+    void setGeometryAt(Instance instance, size_t primitiveIndex, PrimitiveType type,
+            VertexBuffer* UTILS_NONNULL vertices,
+            IndexBuffer* UTILS_NONNULL indices,
             size_t offset, size_t count) noexcept;
 
     /**
-     * Changes the active range of indices or topology for the given primitive.
-     *
-     * \see Builder::geometry()
-     */
-    void setGeometryAt(Instance instance, size_t primitiveIndex,
-            PrimitiveType type, size_t offset, size_t count) noexcept;
-
-    /**
-     * Changes the ordering index for blended primitives that all live at the same Z value.
-     *
-     * \see Builder::blendOrder()
+     * Changes the drawing order for blended primitives. The drawing order is either global or
+     * local (default) to this Renderable. In either case, the Renderable priority takes precedence.
      *
      * @param instance the renderable of interest
      * @param primitiveIndex the primitive of interest
      * @param order draw order number (0 by default). Only the lowest 15 bits are used.
+     *
+     * @see Builder::blendOrder(), setGlobalBlendOrderEnabledAt()
      */
     void setBlendOrderAt(Instance instance, size_t primitiveIndex, uint16_t order) noexcept;
+
+    /**
+     * Changes whether the blend order is global or local to this Renderable (by default).
+     *
+     * @param instance the renderable of interest
+     * @param primitiveIndex the primitive of interest
+     * @param enabled true for global, false for local blend ordering.
+     *
+     * @see Builder::globalBlendOrderEnabled(), setBlendOrderAt()
+     */
+    void setGlobalBlendOrderEnabledAt(Instance instance, size_t primitiveIndex, bool enabled) noexcept;
 
     /**
      * Retrieves the set of enabled attribute slots in the given primitive's VertexBuffer.
@@ -604,20 +852,20 @@ public:
     /*! \cond PRIVATE */
     template<typename T>
     struct is_supported_vector_type {
-        using type = typename std::enable_if<
-                std::is_same<math::float4, T>::value ||
-                std::is_same<math::half4,  T>::value ||
-                std::is_same<math::float3, T>::value ||
-                std::is_same<math::half3,  T>::value
-        >::type;
+        using type = std::enable_if_t<
+                std::is_same_v<math::float4, T> ||
+                std::is_same_v<math::half4,  T> ||
+                std::is_same_v<math::float3, T> ||
+                std::is_same_v<math::half3,  T>
+        >;
     };
 
     template<typename T>
     struct is_supported_index_type {
-        using type = typename std::enable_if<
-                std::is_same<uint16_t, T>::value ||
-                std::is_same<uint32_t, T>::value
-        >::type;
+        using type = std::enable_if_t<
+                std::is_same_v<uint16_t, T> ||
+                std::is_same_v<uint32_t, T>
+        >;
     };
     /*! \endcond */
 
@@ -631,27 +879,23 @@ public:
     template<typename VECTOR, typename INDEX,
             typename = typename is_supported_vector_type<VECTOR>::type,
             typename = typename is_supported_index_type<INDEX>::type>
-    static Box computeAABB(VECTOR const* vertices, INDEX const* indices, size_t count,
+    static Box computeAABB(
+            VECTOR const* UTILS_NONNULL vertices,
+            INDEX const* UTILS_NONNULL indices, size_t count,
             size_t stride = sizeof(VECTOR)) noexcept;
+
+protected:
+    // prevent heap allocation
+    ~RenderableManager() = default;
 };
 
-RenderableManager::Builder& RenderableManager::Builder::morphing(uint8_t level, size_t primitiveIndex,
-        MorphTargetBuffer* morphTargetBuffer) noexcept {
-    return morphing(level, primitiveIndex, morphTargetBuffer, 0,
-            morphTargetBuffer->getVertexCount());
-}
-
-void RenderableManager::setMorphTargetBufferAt(Instance instance, uint8_t level, size_t primitiveIndex,
-        MorphTargetBuffer* morphTargetBuffer) {
-    setMorphTargetBufferAt(instance, level, primitiveIndex, morphTargetBuffer, 0,
-            morphTargetBuffer->getVertexCount());
-}
-
 template<typename VECTOR, typename INDEX, typename, typename>
-Box RenderableManager::computeAABB(VECTOR const* vertices, INDEX const* indices, size_t count,
-        size_t stride) noexcept {
-    math::float3 bmin(std::numeric_limits<float>::max());
-    math::float3 bmax(std::numeric_limits<float>::lowest());
+Box RenderableManager::computeAABB(
+        VECTOR const* UTILS_NONNULL vertices,
+        INDEX const* UTILS_NONNULL indices,
+        size_t count, size_t stride) noexcept {
+    math::float3 bmin(FLT_MAX);
+    math::float3 bmax(-FLT_MAX);
     for (size_t i = 0; i < count; ++i) {
         VECTOR const* p = reinterpret_cast<VECTOR const*>(
                 (char const*)vertices + indices[i] * stride);

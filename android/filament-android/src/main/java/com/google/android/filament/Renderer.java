@@ -61,13 +61,17 @@ public class Renderer {
         /**
          * How far in advance a buffer must be queued for presentation at a given time in ns
          * On Android you can use {@link android.view.Display#getPresentationDeadlineNanos()}.
+         * @deprecated this value is ignored
          */
+        @Deprecated
         public long presentationDeadlineNanos = 0;
 
         /**
          * Offset by which vsyncSteadyClockTimeNano provided in beginFrame() is offset in ns
          * On Android you can use {@link android.view.Display#getAppVsyncOffsetNanos()}.
+         * @deprecated this value is ignored
          */
+        @Deprecated
         public long vsyncOffsetNanos = 0;
     };
 
@@ -97,7 +101,7 @@ public class Renderer {
         /**
          * Desired frame interval in unit of 1 / DisplayInfo.refreshRate.
          */
-        public float interval = 1.0f / 60.0f;
+        public float interval = 1.0f;
 
         /**
          * Additional headroom for the GPU as a ratio of the targetFrameTime.
@@ -120,7 +124,24 @@ public class Renderer {
      */
     public static class ClearOptions {
         /**
-         * Color to use to clear the SwapChain
+         * Color (sRGB linear) to use to clear the RenderTarget (typically the SwapChain).
+         *
+         * The RenderTarget is cleared using this color, which won't be tone-mapped since
+         * tone-mapping is part of View rendering (this is not).
+         *
+         * When a View is rendered, there are 3 scenarios to consider:
+         * - Pixels rendered by the View replace the clear color (or blend with it in
+         *   `BlendMode.TRANSLUCENT` mode).
+         *
+         * - With blending mode set to `BlendMode.TRANSLUCENT`, Pixels untouched by the View
+         *   are considered fulling transparent and let the clear color show through.
+         *
+         * - With blending mode set to `BlendMode.OPAQUE`, Pixels untouched by the View
+         *   are set to the clear color. However, because it is now used in the context of a View,
+         *   it will go through the post-processing stage, which includes tone-mapping.
+         *
+         * For consistency, it is recommended to always use a Skybox to clear an opaque View's
+         * background, or to use black or fully-transparent (i.e. {0,0,0,0}) as the clear color.
          */
         @NonNull
         public float[] clearColor = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -175,8 +196,7 @@ public class Renderer {
      */
     public void setDisplayInfo(@NonNull DisplayInfo info) {
         mDisplayInfo = info;
-        nSetDisplayInfo(getNativeObject(),
-                info.refreshRate, info.presentationDeadlineNanos, info.vsyncOffsetNanos);
+        nSetDisplayInfo(getNativeObject(), info.refreshRate);
     }
 
     /**
@@ -245,6 +265,50 @@ public class Renderer {
     @NonNull
     public Engine getEngine() {
         return mEngine;
+    }
+
+    /**
+     * Set the time at which the frame must be presented to the display.
+     * <p>
+     * This must be called between {@link #beginFrame} and {@link #endFrame}.
+     * </p>
+     *
+     * @param monotonicClockNanos  The time in nanoseconds corresponding to the system monotonic
+     *                             up-time clock. The presentation time is typically set in the
+     *                             middle of the period of interest and cannot be too far in the
+     *                             future as it is limited by how many buffers are available in
+     *                             the display sub-system. Typically it is set to 1 or 2 vsync
+     *                             periods away.
+     */
+    public void setPresentationTime(long monotonicClockNanos) {
+        nSetPresentationTime(getNativeObject(), monotonicClockNanos);
+    }
+
+    /**
+     * The use of this method is optional. It sets the VSYNC time expressed as the duration in
+     * nanosecond since epoch of std::chrono::steady_clock.
+     * If called, passing 0 to frameTimeNanos in Renderer.BeginFrame will use this
+     * time instead.
+     * @param steadyClockTimeNano duration in nanosecond since epoch of std::chrono::steady_clock
+     * @see Engine#getSteadyClockTimeNano
+     * @see Renderer#beginFrame
+     */
+    public void setVsyncTime(long steadyClockTimeNano) {
+        nSetVsyncTime(getNativeObject(), steadyClockTimeNano);
+    }
+
+    /**
+     * Call skipFrame when momentarily skipping frames, for instance if the content of the
+     * scene doesn't change.
+     *
+     * @param vsyncSteadyClockTimeNano The time in nanoseconds when the frame started being rendered,
+     *                       in the {@link System#nanoTime()} timebase. Divide this value by 1000000 to
+     *                       convert it to the {@link android.os.SystemClock#uptimeMillis()}
+     *                       time base. This typically comes from
+     *                       {@link android.view.Choreographer.FrameCallback}.
+     */
+    public void skipFrame(long vsyncSteadyClockTimeNano) {
+        nSkipFrame(getNativeObject(), vsyncSteadyClockTimeNano);
     }
 
     /**
@@ -664,6 +728,9 @@ public class Renderer {
         mNativeObject = 0;
     }
 
+    private static native void nSetPresentationTime(long nativeObject, long monotonicClockNanos);
+    private static native void nSetVsyncTime(long nativeObject, long steadyClockTimeNano);
+    private static native void nSkipFrame(long nativeObject, long vsyncSteadyClockTimeNano);
     private static native boolean nBeginFrame(long nativeRenderer, long nativeSwapChain, long frameTimeNanos);
     private static native void nEndFrame(long nativeRenderer);
     private static native void nRender(long nativeRenderer, long nativeView);
@@ -685,8 +752,7 @@ public class Renderer {
             Object handler, Runnable callback);
     private static native double nGetUserTime(long nativeRenderer);
     private static native void nResetUserTime(long nativeRenderer);
-    private static native void nSetDisplayInfo(long nativeRenderer,
-            float refreshRate, long presentationDeadlineNanos, long vsyncOffsetNanos);
+    private static native void nSetDisplayInfo(long nativeRenderer, float refreshRate);
     private static native void nSetFrameRateOptions(long nativeRenderer,
             float interval, float headRoomRatio, float scaleRate, int history);
     private static native void nSetClearOptions(long nativeRenderer,

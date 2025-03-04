@@ -21,8 +21,11 @@
 
 #include <filament/Engine.h>
 
+#include <utils/compiler.h>
+
 #include <math/mathfwd.h>
 
+#include <stddef.h>
 
 namespace filament {
 
@@ -36,7 +39,7 @@ class UTILS_PUBLIC MorphTargetBuffer : public FilamentAPI {
     struct BuilderDetails;
 
 public:
-    class Builder : public BuilderBase<BuilderDetails> {
+    class Builder : public BuilderBase<BuilderDetails>, public BuilderNameMixin<Builder> {
         friend struct BuilderDetails;
     public:
         Builder() noexcept;
@@ -61,63 +64,83 @@ public:
         Builder& count(size_t count) noexcept;
 
         /**
+         * Associate an optional name with this MorphTargetBuffer for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible. The name is
+         * truncated to a maximum of 128 characters.
+         *
+         * The name string is copied during this method so clients may free its memory after
+         * the function returns.
+         *
+         * @param name A string to identify this MorphTargetBuffer
+         * @param len Length of name, should be less than or equal to 128
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
          * Creates the MorphTargetBuffer object and returns a pointer to it.
          *
          * @param engine Reference to the filament::Engine to associate this MorphTargetBuffer with.
          *
-         * @return pointer to the newly created object or nullptr if exceptions are disabled and
-         *         an error occurred.
+         * @return pointer to the newly created object.
          *
          * @exception utils::PostConditionPanic if a runtime error occurred, such as running out of
          *            memory or other resources.
          * @exception utils::PreConditionPanic if a parameter to a builder function was invalid.
          */
-        MorphTargetBuffer* build(Engine& engine);
+        MorphTargetBuffer* UTILS_NONNULL build(Engine& engine);
     private:
         friend class FMorphTargetBuffer;
     };
 
     /**
-     * Updates the position of morph target at the index.
+     * Updates positions for the given morph target.
+     *
+     * This is equivalent to the float4 method, but uses 1.0 for the 4th component.
      *
      * Both positions and tangents must be provided.
      *
      * @param engine Reference to the filament::Engine associated with this MorphTargetBuffer.
      * @param targetIndex the index of morph target to be updated.
-     * @param weights pointer to at least count positions
-     * @param count number of position elements in positions
+     * @param positions pointer to at least "count" positions
+     * @param count number of float3 vectors in positions
+     * @param offset offset into the target buffer, expressed as a number of float4 vectors
      * @see setTangentsAt
      */
     void setPositionsAt(Engine& engine, size_t targetIndex,
-            math::float3 const* positions, size_t count, size_t offset = 0);
+            math::float3 const* UTILS_NONNULL positions, size_t count, size_t offset = 0);
 
     /**
-     * Updates the position of morph target at the index.
+     * Updates positions for the given morph target.
      *
      * Both positions and tangents must be provided.
      *
      * @param engine Reference to the filament::Engine associated with this MorphTargetBuffer.
      * @param targetIndex the index of morph target to be updated.
-     * @param weights pointer to at least count positions
-     * @param count number of position elements in positions
+     * @param positions pointer to at least "count" positions
+     * @param count number of float4 vectors in positions
+     * @param offset offset into the target buffer, expressed as a number of float4 vectors
+     * @see setTangentsAt
+     */
+    void setPositionsAt(Engine& engine, size_t targetIndex,
+            math::float4 const* UTILS_NONNULL positions, size_t count, size_t offset = 0);
+
+    /**
+     * Updates tangents for the given morph target.
+     *
+     * These quaternions must be represented as signed shorts, where real numbers in the [-1,+1]
+     * range multiplied by 32767.
+     *
+     * @param engine Reference to the filament::Engine associated with this MorphTargetBuffer.
+     * @param targetIndex the index of morph target to be updated.
+     * @param tangents pointer to at least "count" tangents
+     * @param count number of short4 quaternions in tangents
+     * @param offset offset into the target buffer, expressed as a number of short4 vectors
      * @see setPositionsAt
      */
-    void setPositionsAt(Engine& engine, size_t targetIndex,
-            math::float4 const* positions, size_t count, size_t offset = 0);
-
-    /**
-     * Updates the position of morph target at the index.
-     *
-     * Both positions and tangents must be provided.
-     *
-     * @param engine Reference to the filament::Engine associated with this MorphTargetBuffer.
-     * @param targetIndex the index of morph target to be updated.
-     * @param tangents pointer to at least count tangents
-     * @param count number of tangent elements in tangents
-     * @see setTangentsAt
-     */
     void setTangentsAt(Engine& engine, size_t targetIndex,
-            math::short4 const* tangents, size_t count, size_t offset = 0);
+            math::short4 const* UTILS_NONNULL tangents, size_t count, size_t offset = 0);
 
     /**
      * Returns the vertex count of this MorphTargetBuffer.
@@ -130,6 +153,10 @@ public:
      * @return The number of targets the MorphTargetBuffer holds.
      */
     size_t getCount() const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~MorphTargetBuffer() = default;
 };
 
 } // namespace filament

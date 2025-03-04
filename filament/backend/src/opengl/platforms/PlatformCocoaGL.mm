@@ -17,9 +17,8 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-#include "PlatformCocoaGL.h"
+#include <backend/platforms/PlatformCocoaGL.h>
 
-#include "opengl/OpenGLDriverFactory.h"
 #include "opengl/gl_headers.h"
 
 #include <utils/compiler.h>
@@ -29,13 +28,14 @@
 #include <Cocoa/Cocoa.h>
 
 #include <vector>
+#include "CocoaExternalImage.h"
 
 namespace filament::backend {
 
 using namespace backend;
 
 struct CocoaGLSwapChain : public Platform::SwapChain {
-    CocoaGLSwapChain(NSView* inView);
+    explicit CocoaGLSwapChain(NSView* inView);
     ~CocoaGLSwapChain() noexcept;
 
     NSView* view;
@@ -50,8 +50,18 @@ struct PlatformCocoaGLImpl {
     NSOpenGLContext* mGLContext = nullptr;
     CocoaGLSwapChain* mCurrentSwapChain = nullptr;
     std::vector<NSView*> mHeadlessSwapChains;
+    std::vector<NSOpenGLContext*> mAdditionalContexts;
+    CVOpenGLTextureCacheRef mTextureCache = nullptr;
+    std::unique_ptr<CocoaExternalImage::SharedGl> mExternalImageSharedGl;
     void updateOpenGLContext(NSView *nsView, bool resetView, bool clearView);
+    struct ExternalImageCocoaGL : public Platform::ExternalImage {
+        CVPixelBufferRef cvBuffer;
+    protected:
+        ~ExternalImageCocoaGL() noexcept final;
+    };
 };
+
+PlatformCocoaGLImpl::ExternalImageCocoaGL::~ExternalImageCocoaGL() noexcept = default;
 
 CocoaGLSwapChain::CocoaGLSwapChain( NSView* inView )
         : view(inView)
@@ -138,14 +148,13 @@ PlatformCocoaGL::~PlatformCocoaGL() noexcept {
     delete pImpl;
 }
 
-Driver* PlatformCocoaGL::createDriver(void* sharedContext) noexcept {
+Driver* PlatformCocoaGL::createDriver(void* sharedContext, const Platform::DriverConfig& driverConfig) noexcept {
     // NSOpenGLPFAColorSize: when unspecified, a format that matches the screen is preferred
     NSOpenGLPixelFormatAttribute pixelFormatAttributes[] = {
             NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
             NSOpenGLPFADepthSize,    (NSOpenGLPixelFormatAttribute) 24,
             NSOpenGLPFADoubleBuffer, (NSOpenGLPixelFormatAttribute) true,
             NSOpenGLPFAAccelerated,  (NSOpenGLPixelFormatAttribute) true,
-            NSOpenGLPFANoRecovery,   (NSOpenGLPixelFormatAttribute) true,
             0, 0,
     };
 
@@ -160,18 +169,51 @@ Driver* PlatformCocoaGL::createDriver(void* sharedContext) noexcept {
     pImpl->mGLContext = nsOpenGLContext;
 
     int result = bluegl::bind();
-    ASSERT_POSTCONDITION(!result, "Unable to load OpenGL entry points.");
-    return OpenGLDriverFactory::create(this, sharedContext);
+    FILAMENT_CHECK_POSTCONDITION(!result) << "Unable to load OpenGL entry points.";
+
+    UTILS_UNUSED_IN_RELEASE CVReturn success = CVOpenGLTextureCacheCreate(kCFAllocatorDefault, nullptr,
+            [pImpl->mGLContext CGLContextObj], [pImpl->mGLContext.pixelFormat CGLPixelFormatObj], nullptr,
+            &pImpl->mTextureCache);
+    assert_invariant(success == kCVReturnSuccess);
+
+    return OpenGLPlatform::createDefaultDriver(this, sharedContext, driverConfig);
+}
+
+bool PlatformCocoaGL::isExtraContextSupported() const noexcept {
+    // macOS supports shared contexts however, it looks like the implementation uses a global
+    // lock around all GL APIs. It's a problem for API calls that take a long time to execute,
+    // one such call is e.g.: glCompileProgram.
+    return true;
+}
+
+void PlatformCocoaGL::createContext(bool shared) {
+    NSOpenGLPixelFormatAttribute pixelFormatAttributes[] = {
+            NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+            NSOpenGLPFAAccelerated,  (NSOpenGLPixelFormatAttribute) true,
+            0, 0,
+    };
+    NSOpenGLContext* const sharedContext = shared ? pImpl->mGLContext : nil;
+    NSOpenGLPixelFormat* const pixelFormat = [[NSOpenGLPixelFormat alloc] initWithAttributes:pixelFormatAttributes];
+    NSOpenGLContext* const nsOpenGLContext = [[NSOpenGLContext alloc] initWithFormat:pixelFormat shareContext:sharedContext];
+    [nsOpenGLContext makeCurrentContext];
+    pImpl->mAdditionalContexts.push_back(nsOpenGLContext);
+}
+
+int PlatformCocoaGL::getOSVersion() const noexcept {
+    return 0;
 }
 
 void PlatformCocoaGL::terminate() noexcept {
+    CFRelease(pImpl->mTextureCache);
+    pImpl->mExternalImageSharedGl.reset();
     pImpl->mGLContext = nil;
+    for (auto& context : pImpl->mAdditionalContexts) {
+        context = nil;
+    }
     bluegl::unbind();
 }
 
-Platform::SwapChain* PlatformCocoaGL::createSwapChain(void* nativewindow, uint64_t& flags) noexcept {
-    // Transparent SwapChain is not supported
-    flags &= ~SWAP_CHAIN_CONFIG_TRANSPARENT;
+Platform::SwapChain* PlatformCocoaGL::createSwapChain(void* nativewindow, uint64_t flags) noexcept {
     NSView* nsView = (__bridge NSView*)nativewindow;
 
     CocoaGLSwapChain* swapChain = new CocoaGLSwapChain( nsView );
@@ -186,7 +228,7 @@ Platform::SwapChain* PlatformCocoaGL::createSwapChain(void* nativewindow, uint64
     return swapChain;
 }
 
-Platform::SwapChain* PlatformCocoaGL::createSwapChain(uint32_t width, uint32_t height, uint64_t& flags) noexcept {
+Platform::SwapChain* PlatformCocoaGL::createSwapChain(uint32_t width, uint32_t height, uint64_t flags) noexcept {
     NSView* nsView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
 
     // adding the pointer to the array retains the NSView
@@ -212,8 +254,8 @@ void PlatformCocoaGL::destroySwapChain(Platform::SwapChain* swapChain) noexcept 
     delete cocoaSwapChain;
 }
 
-void PlatformCocoaGL::makeCurrent(Platform::SwapChain* drawSwapChain,
-        Platform::SwapChain* readSwapChain) noexcept {
+bool PlatformCocoaGL::makeCurrent(ContextType type, SwapChain* drawSwapChain,
+        SwapChain* readSwapChain) noexcept {
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
             "ContextManagerCocoa does not support using distinct draw/read swap chains.");
     CocoaGLSwapChain* swapChain = (CocoaGLSwapChain*)drawSwapChain;
@@ -252,10 +294,14 @@ void PlatformCocoaGL::makeCurrent(Platform::SwapChain* drawSwapChain,
 
     swapChain->previousBounds = currentBounds;
     swapChain->previousWindowFrame = currentWindowFrame;
+    return true;
 }
 
 void PlatformCocoaGL::commit(Platform::SwapChain* swapChain) noexcept {
     [pImpl->mGLContext flushBuffer];
+
+    // This needs to be done periodically.
+    CVOpenGLTextureCacheFlush(pImpl->mTextureCache, 0);
 }
 
 bool PlatformCocoaGL::pumpEvents() noexcept {
@@ -263,6 +309,70 @@ bool PlatformCocoaGL::pumpEvents() noexcept {
         return false;
     }
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate distantPast]];
+    return true;
+}
+
+OpenGLPlatform::ExternalTexture* PlatformCocoaGL::createExternalImageTexture() noexcept {
+    if (!pImpl->mExternalImageSharedGl) {
+        pImpl->mExternalImageSharedGl = std::make_unique<CocoaExternalImage::SharedGl>();
+    }
+    ExternalTexture* outTexture = new CocoaExternalImage(pImpl->mTextureCache,
+            *pImpl->mExternalImageSharedGl);
+    return outTexture;
+}
+
+void PlatformCocoaGL::destroyExternalImageTexture(ExternalTexture* texture) noexcept {
+    auto* p = static_cast<CocoaExternalImage*>(texture);
+    delete p;
+}
+
+void PlatformCocoaGL::retainExternalImage(void* externalImage) noexcept {
+    // Take ownership of the passed in buffer. It will be released the next time
+    // setExternalImage is called, or when the texture is destroyed.
+    CVPixelBufferRef pixelBuffer = (CVPixelBufferRef) externalImage;
+    CVPixelBufferRetain(pixelBuffer);
+}
+
+bool PlatformCocoaGL::setExternalImage(void* externalImage, ExternalTexture* texture) noexcept {
+    CVPixelBufferRef cvPixelBuffer = (CVPixelBufferRef) externalImage;
+    CocoaExternalImage* cocoaExternalImage = static_cast<CocoaExternalImage*>(texture);
+    if (!cocoaExternalImage->set(cvPixelBuffer)) {
+        return false;
+    }
+    texture->target = cocoaExternalImage->getTarget();
+    texture->id = cocoaExternalImage->getGlTexture();
+    // we used to set the internalFormat, but it's not used anywhere on the gl backend side
+    // cocoaExternalImage->getInternalFormat();
+    return true;
+}
+
+Platform::ExternalImageHandle PlatformCocoaGL::createExternalImage(void* cvPixelBuffer) noexcept {
+    auto* p = new(std::nothrow) PlatformCocoaGLImpl::ExternalImageCocoaGL;
+    p->cvBuffer = (CVPixelBufferRef) cvPixelBuffer;
+    return ExternalImageHandle{ p };
+}
+
+void PlatformCocoaGL::retainExternalImage(ExternalImageHandleRef externalImage) noexcept {
+    auto const* const cocoaGlExternalImage
+            = static_cast<PlatformCocoaGLImpl::ExternalImageCocoaGL const*>(externalImage.get());
+    // Take ownership of the passed in buffer. It will be released the next time
+    // setExternalImage is called, or when the texture is destroyed.
+    CVPixelBufferRef pixelBuffer = cocoaGlExternalImage->cvBuffer;
+    CVPixelBufferRetain(pixelBuffer);
+}
+
+bool PlatformCocoaGL::setExternalImage(ExternalImageHandleRef externalImage, ExternalTexture* texture) noexcept {
+    auto const* const cocoaGlExternalImage
+            = static_cast<PlatformCocoaGLImpl::ExternalImageCocoaGL const*>(externalImage.get());
+    CVPixelBufferRef cvPixelBuffer = cocoaGlExternalImage->cvBuffer;
+    CocoaExternalImage* cocoaExternalImage = static_cast<CocoaExternalImage*>(texture);
+    if (!cocoaExternalImage->set(cvPixelBuffer)) {
+        return false;
+    }
+    texture->target = cocoaExternalImage->getTarget();
+    texture->id = cocoaExternalImage->getGlTexture();
+    // we used to set the internalFormat, but it's not used anywhere on the gl backend side
+    // cocoaExternalImage->getInternalFormat();
     return true;
 }
 

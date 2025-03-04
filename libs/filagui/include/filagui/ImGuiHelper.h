@@ -53,7 +53,8 @@ public:
     ~ImGuiHelper();
 
     // Informs ImGui of the current display size, as well as a scaling factor when scissoring.
-    void setDisplaySize(int width, int height, float scaleX = 1.0f, float scaleY = 1.0f);
+    void setDisplaySize(int width, int height, float scaleX = 1.0f,
+            float scaleY = 1.0f, bool flipVertical = false);
 
     // High-level utility method that takes a callback for creating all ImGui windows and widgets.
     // Clients are responsible for rendering the View. This should be called on every frame,
@@ -82,17 +83,23 @@ public:
       filament::Engine* mEngine;
       filament::View* mView; // The view is owned by the client.
       filament::Scene* mScene;
-      filament::Material* mMaterial = nullptr;
+      filament::Material* mMaterial2d = nullptr;
+      std::vector<filament::MaterialInstance*> mMaterial2dInstances;
+#ifdef __ANDROID__
+      filament::Material* mMaterialExternal = nullptr;
+      std::vector<filament::MaterialInstance*> mMaterialExternalInstances;
+#endif
       filament::Camera* mCamera = nullptr;
       std::vector<filament::VertexBuffer*> mVertexBuffers;
       std::vector<filament::IndexBuffer*> mIndexBuffers;
-      std::vector<filament::MaterialInstance*> mMaterialInstances;
       utils::Entity mRenderable;
       utils::Entity mCameraEntity;
       filament::Texture* mTexture = nullptr;
       bool mHasSynced = false;
       ImGuiContext* mImGuiContext;
       filament::TextureSampler mSampler;
+      bool mFlipVertical = false;
+      utils::Path mSettingsPath;
 };
 
 } // namespace filagui

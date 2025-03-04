@@ -17,14 +17,21 @@
 #ifndef TNT_FILAMENT_DETAILS_DEBUGREGISTRY_H
 #define TNT_FILAMENT_DETAILS_DEBUGREGISTRY_H
 
-#include "upcast.h"
+#include "downcast.h"
 
 #include <filament/DebugRegistry.h>
 
 #include <utils/compiler.h>
-#include <utils/CString.h>
+#include <utils/Invocable.h>
 
+#include <math/mathfwd.h>
+
+#include <functional>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
+
+#include <stddef.h>
 
 namespace filament {
 
@@ -32,33 +39,75 @@ class FEngine;
 
 class FDebugRegistry : public DebugRegistry {
 public:
+    enum Type {
+        BOOL, INT, FLOAT, FLOAT2, FLOAT3, FLOAT4
+    };
+
     FDebugRegistry() noexcept;
 
-    void registerProperty(utils::StaticString name, bool* p) noexcept {
+    void registerProperty(std::string_view const name, bool* p) noexcept {
         registerProperty(name, p, BOOL);
     }
 
-    void registerProperty(utils::StaticString name, int* p) noexcept {
+    void registerProperty(std::string_view const name, int* p) noexcept {
         registerProperty(name, p, INT);
     }
 
-    void registerProperty(utils::StaticString name, float* p) noexcept {
+    void registerProperty(std::string_view const name, float* p) noexcept {
         registerProperty(name, p, FLOAT);
     }
 
-    void registerProperty(utils::StaticString name, math::float2* p) noexcept {
+    void registerProperty(std::string_view const name, math::float2* p) noexcept {
         registerProperty(name, p, FLOAT2);
     }
 
-    void registerProperty(utils::StaticString name, math::float3* p) noexcept {
+    void registerProperty(std::string_view const name, math::float3* p) noexcept {
         registerProperty(name, p, FLOAT3);
     }
 
-    void registerProperty(utils::StaticString name, math::float4* p) noexcept {
+    void registerProperty(std::string_view const name, math::float4* p) noexcept {
         registerProperty(name, p, FLOAT4);
     }
 
-    void registerDataSource(utils::StaticString name, void const* data, size_t count) noexcept;
+
+    void registerProperty(std::string_view const name, bool* p,
+            std::function<void()> fn) noexcept {
+        registerProperty(name, p, BOOL, std::move(fn));
+    }
+
+    void registerProperty(std::string_view const name, int* p,
+            std::function<void()> fn) noexcept {
+        registerProperty(name, p, INT, std::move(fn));
+    }
+
+    void registerProperty(std::string_view const name, float* p,
+            std::function<void()> fn) noexcept {
+        registerProperty(name, p, FLOAT, std::move(fn));
+    }
+
+    void registerProperty(std::string_view const name, math::float2* p,
+            std::function<void()> fn) noexcept {
+        registerProperty(name, p, FLOAT2, std::move(fn));
+    }
+
+    void registerProperty(std::string_view const name, math::float3* p,
+            std::function<void()> fn) noexcept {
+        registerProperty(name, p, FLOAT3, std::move(fn));
+    }
+
+    void registerProperty(std::string_view const name, math::float4* p,
+            std::function<void()> fn) noexcept {
+        registerProperty(name, p, FLOAT4, std::move(fn));
+    }
+
+    // registers a DataSource directly
+    bool registerDataSource(std::string_view name, void const* data, size_t count) noexcept;
+
+    // registers a DataSource lazily
+    bool registerDataSource(std::string_view name,
+            utils::Invocable<DataSource()>&& creator) noexcept;
+
+    void unregisterDataSource(std::string_view name) noexcept;
 
 #if !defined(_MSC_VER)
 private:
@@ -67,16 +116,20 @@ private:
     template<typename T> bool setProperty(const char* name, T v) noexcept;
 
 private:
+    using PropertyInfo = std::pair<void*, std::function<void()>>;
     friend class DebugRegistry;
-    void registerProperty(utils::StaticString name, void* p, Type type) noexcept;
+    void registerProperty(std::string_view name, void* p, Type type, std::function<void()> fn = {}) noexcept;
     bool hasProperty(const char* name) const noexcept;
-    void* getPropertyAddress(const char* name) noexcept;
+    PropertyInfo getPropertyInfo(const char* name) noexcept;
+    void* getPropertyAddress(const char* name);
+    void const* getPropertyAddress(const char* name) const noexcept;
     DataSource getDataSource(const char* name) const noexcept;
-    std::unordered_map<utils::StaticString, void*> mPropertyMap;
-    std::unordered_map<utils::StaticString, DataSource> mDataSourceMap;
+    std::unordered_map<std::string_view, PropertyInfo> mPropertyMap;
+    mutable std::unordered_map<std::string_view, DataSource> mDataSourceMap;
+    mutable std::unordered_map<std::string_view, utils::Invocable<DataSource()>> mDataSourceCreatorMap;
 };
 
-FILAMENT_UPCAST(DebugRegistry)
+FILAMENT_DOWNCAST(DebugRegistry)
 
 } // namespace filament
 

@@ -19,58 +19,155 @@
 
 #include <backend/DriverEnums.h>
 
+#include <utils/BitmaskEnum.h>
+#include <utils/FixedCapacityVector.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
 namespace filament {
 
-static constexpr size_t POST_PROCESS_VARIANT_COUNT = 2;
+static constexpr size_t POST_PROCESS_VARIANT_BITS = 1;
+static constexpr size_t POST_PROCESS_VARIANT_COUNT = (1u << POST_PROCESS_VARIANT_BITS);
+static constexpr size_t POST_PROCESS_VARIANT_MASK = POST_PROCESS_VARIANT_COUNT - 1;
+
 enum class PostProcessVariant : uint8_t {
     OPAQUE,
     TRANSLUCENT
 };
 
-// Binding points for uniform buffers and sampler buffers.
-// Effectively, these are just names.
-namespace BindingPoints {
-    constexpr uint8_t PER_VIEW                   = 0;    // uniforms/samplers updated per view
-    constexpr uint8_t PER_RENDERABLE             = 1;    // uniforms/samplers updated per renderable
-    constexpr uint8_t PER_RENDERABLE_BONES       = 2;    // bones data, per renderable
-    constexpr uint8_t PER_RENDERABLE_MORPHING    = 3;    // morphing uniform/sampler updated per render primitive
-    constexpr uint8_t LIGHTS                     = 4;    // lights data array
-    constexpr uint8_t SHADOW                     = 5;    // punctual shadow data
-    constexpr uint8_t FROXEL_RECORDS             = 6;
-    constexpr uint8_t PER_MATERIAL_INSTANCE      = 7;    // uniforms/samplers updates per material
-    constexpr uint8_t COUNT                      = 8;
-    // These are limited by CONFIG_BINDING_COUNT (currently 12)
-}
+enum class DescriptorSetBindingPoints : uint8_t {
+    PER_VIEW        = 0,
+    PER_RENDERABLE  = 1,
+    PER_MATERIAL    = 2,
+};
 
-static_assert(BindingPoints::COUNT <= backend::CONFIG_BINDING_COUNT);
+// binding point for the "per-view" descriptor set
+enum class PerViewBindingPoints : uint8_t  {
+    FRAME_UNIFORMS  =  0,   // uniforms updated per view
+    SHADOWS         =  1,   // punctual shadow data
+    LIGHTS          =  2,   // lights data array
+    RECORD_BUFFER   =  3,   // froxel record buffer
+    FROXEL_BUFFER   =  4,   // froxel buffer
+    STRUCTURE       =  5,   // variable, DEPTH
+    SHADOW_MAP      =  6,   // user defined (1024x1024) DEPTH, array
+    IBL_DFG_LUT     =  7,   // user defined (128x128), RGB16F
+    IBL_SPECULAR    =  8,   // user defined, user defined, CUBEMAP
+    SSAO            =  9,   // variable, RGB8 {AO, [depth]}
+    SSR             = 10,   // variable, RGB_11_11_10, mipmapped
+    FOG             = 11    // variable, user defined, CUBEMAP
+};
 
-static_assert(BindingPoints::PER_MATERIAL_INSTANCE == BindingPoints::COUNT - 1,
-        "Dynamically sized sampler buffer must be the last binding point.");
+enum class PerRenderableBindingPoints : uint8_t  {
+    OBJECT_UNIFORMS             =  0,   // uniforms updated per renderable
+    BONES_UNIFORMS              =  1,
+    MORPHING_UNIFORMS           =  2,
+    MORPH_TARGET_POSITIONS      =  3,
+    MORPH_TARGET_TANGENTS       =  4,
+    BONES_INDICES_AND_WEIGHTS   =  5,
+};
+
+enum class PerMaterialBindingPoints : uint8_t  {
+    MATERIAL_PARAMS             =  0,   // uniforms
+};
+
+enum class ReservedSpecializationConstants : uint8_t {
+    BACKEND_FEATURE_LEVEL = 0,
+    CONFIG_MAX_INSTANCES = 1,
+    CONFIG_STATIC_TEXTURE_TARGET_WORKAROUND = 2,
+    CONFIG_SRGB_SWAPCHAIN_EMULATION = 3, // don't change (hardcoded in OpenGLDriver.cpp)
+    CONFIG_FROXEL_BUFFER_HEIGHT = 4,
+    CONFIG_POWER_VR_SHADER_WORKAROUNDS = 5,
+    CONFIG_DEBUG_DIRECTIONAL_SHADOWMAP = 6,
+    CONFIG_DEBUG_FROXEL_VISUALIZATION = 7,
+    CONFIG_STEREO_EYE_COUNT = 8, // don't change (hardcoded in ShaderCompilerService.cpp)
+    CONFIG_SH_BANDS_COUNT = 9,
+    CONFIG_SHADOW_SAMPLING_METHOD = 10
+    // check CONFIG_MAX_RESERVED_SPEC_CONSTANTS below
+};
+
+enum class PushConstantIds : uint8_t  {
+    MORPHING_BUFFER_OFFSET = 0,
+};
 
 // This value is limited by UBO size, ES3.0 only guarantees 16 KiB.
-// Values <= 256, use less CPU and GPU resources.
+// It's also limited by the Froxelizer's record buffer data type (uint8_t).
 constexpr size_t CONFIG_MAX_LIGHT_COUNT = 256;
 constexpr size_t CONFIG_MAX_LIGHT_INDEX = CONFIG_MAX_LIGHT_COUNT - 1;
 
-// The maximum number of spot lights in a scene that can cast shadows.
-// There is currently a limit to 14 spot shadow due to how we store the culling result
-// (see View.h).
-constexpr size_t CONFIG_MAX_SHADOW_CASTING_SPOTS = 14;
+// The number of specialization constants that Filament reserves for its own use. These are always
+// the first constants (from 0 to CONFIG_MAX_RESERVED_SPEC_CONSTANTS - 1).
+// Updating this value necessitates a material version bump.
+constexpr size_t CONFIG_MAX_RESERVED_SPEC_CONSTANTS = 16;
+
+// The maximum number of shadow maps possible.
+// There is currently a maximum limit of 128 shadow maps.
+// Factors contributing to this limit:
+// - minspec for UBOs is 16KiB, which currently can hold a maximum of 128 entries
+constexpr size_t CONFIG_MAX_SHADOWMAPS = 128;
+
+// The maximum number of shadow layers.
+// There is currently a maximum limit of 255 layers.
+// Several factors are contributing to this limit:
+// - minspec for 2d texture arrays layer is 256
+// - we're using uint8_t to store the number of layers (255 max)
+// - nonsensical to be larger than the number of shadowmaps
+// - AtlasAllocator depth limits it to 64
+constexpr size_t CONFIG_MAX_SHADOW_LAYERS = 64;
 
 // The maximum number of shadow cascades that can be used for directional lights.
 constexpr size_t CONFIG_MAX_SHADOW_CASCADES = 4;
 
-// This value is also limited by UBO size, ES3.0 only guarantees 16 KiB.
-// We store 64 bytes per bone.
+// The maximum UBO size, in bytes. This value is set to 16 KiB due to the ES3.0 spec.
+// Note that this value constrains the maximum number of skinning bones, morph targets,
+// instances, and shadow casting spotlights.
+constexpr size_t CONFIG_MINSPEC_UBO_SIZE = 16384;
+
+// The maximum number of instances that Filament automatically creates as an optimization.
+// Use a much smaller number for WebGL as a workaround for the following Chrome issues:
+//     https://crbug.com/1348017 Compiling GLSL is very slow with struct arrays
+//     https://crbug.com/1348363 Lighting looks wrong with D3D11 but not OpenGL
+// Note that __EMSCRIPTEN__ is not defined when running matc, but that's okay because we're
+// actually using a specification constant.
+#if defined(__EMSCRIPTEN__)
+constexpr size_t CONFIG_MAX_INSTANCES = 8;
+#else
+constexpr size_t CONFIG_MAX_INSTANCES = 64;
+#endif
+
+// The maximum number of bones that can be associated with a single renderable.
+// We store 32 bytes per bone. Must be a power-of-two, and must fit within CONFIG_MINSPEC_UBO_SIZE.
 constexpr size_t CONFIG_MAX_BONE_COUNT = 256;
 
-// The maximum number of morph target count.
-// This value is limited by ES3.0, ES3.0 only guarantees 256 layers in an array texture.
+// The maximum number of morph targets associated with a single renderable.
+// Note that ES3.0 only guarantees 256 layers in an array texture.
+// Furthermore, this is constrained by CONFIG_MINSPEC_UBO_SIZE (16 bytes per morph target).
 constexpr size_t CONFIG_MAX_MORPH_TARGET_COUNT = 256;
 
+// The max number of eyes supported in stereoscopic mode.
+// The number of eyes actually rendered is set at Engine creation time, see
+// Engine::Config::stereoscopicEyeCount.
+constexpr uint8_t CONFIG_MAX_STEREOSCOPIC_EYES = 4;
+
 } // namespace filament
+
+template<>
+struct utils::EnableIntegerOperators<filament::DescriptorSetBindingPoints> : public std::true_type {};
+template<>
+struct utils::EnableIntegerOperators<filament::PerViewBindingPoints> : public std::true_type {};
+template<>
+struct utils::EnableIntegerOperators<filament::PerRenderableBindingPoints> : public std::true_type {};
+template<>
+struct utils::EnableIntegerOperators<filament::PerMaterialBindingPoints> : public std::true_type {};
+
+template<>
+struct utils::EnableIntegerOperators<filament::ReservedSpecializationConstants> : public std::true_type {};
+template<>
+struct utils::EnableIntegerOperators<filament::PushConstantIds> : public std::true_type {};
+template<>
+struct utils::EnableIntegerOperators<filament::PostProcessVariant> : public std::true_type {};
+
+template<>
+inline constexpr size_t utils::Enum::count<filament::PostProcessVariant>() { return filament::POST_PROCESS_VARIANT_COUNT; }
 
 #endif // TNT_FILAMENT_ENGINE_ENUM_H

@@ -19,25 +19,31 @@
 
 #include "private/backend/CircularBuffer.h"
 #include "private/backend/Dispatcher.h"
-#include "private/backend/Program.h"
-#include "private/backend/SamplerGroup.h"
 #include "private/backend/Driver.h"
 
 #include <backend/BufferDescriptor.h>
+#include <backend/CallbackHandler.h>
 #include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 #include <backend/PipelineState.h>
+#include <backend/Program.h>
 #include <backend/PixelBufferDescriptor.h>
 #include <backend/PresentCallable.h>
 #include <backend/TargetBufferInfo.h>
 
 #include <utils/compiler.h>
+#include <utils/debug.h>
 #include <utils/ThreadUtils.h>
 
+#include <cstddef>
 #include <functional>
 #include <tuple>
-#include <thread>
+#include <type_traits>
 #include <utility>
+
+#ifndef NDEBUG
+#include <thread>
+#endif
 
 #include <assert.h>
 #include <stddef.h>
@@ -128,7 +134,7 @@ struct CommandType<void (Driver::*)(ARGS...)> {
 
     public:
         template<typename M, typename D>
-        static inline void execute(M&& method, D&& driver, CommandBase* base, intptr_t* next) noexcept {
+        static inline void execute(M&& method, D&& driver, CommandBase* base, intptr_t* next) {
             Command* self = static_cast<Command*>(base);
             *next = align(sizeof(Command));
 #if DEBUG_COMMAND_STREAM
@@ -148,21 +154,21 @@ struct CommandType<void (Driver::*)(ARGS...)> {
         }
 
         // placement new declared as "throw" to avoid the compiler's null-check
-        inline void* operator new(std::size_t size, void* ptr) {
+        inline void* operator new(std::size_t, void* ptr) {
             assert_invariant(ptr);
             return ptr;
         }
     };
 };
 
-// convert an method of "class Driver" into a Command<> type
+// convert a method of "class Driver" into a Command<> type
 #define COMMAND_TYPE(method) CommandType<decltype(&Driver::method)>::Command<&Driver::method>
 
 // ------------------------------------------------------------------------------------------------
 
 class CustomCommand : public CommandBase {
     std::function<void()> mCommand;
-    static void execute(Driver&, CommandBase* base, intptr_t* next) noexcept;
+    static void execute(Driver&, CommandBase* base, intptr_t* next);
 public:
     inline CustomCommand(CustomCommand&& rhs) = default;
     inline explicit CustomCommand(std::function<void()> cmd)
@@ -206,6 +212,8 @@ public:
 
     CommandStream(CommandStream const& rhs) noexcept = delete;
     CommandStream& operator=(CommandStream const& rhs) noexcept = delete;
+
+    CircularBuffer const& getCircularBuffer() const noexcept { return mCurrentBuffer; }
 
 public:
 #define DECL_DRIVER_API(methodName, paramsDecl, params)                                         \

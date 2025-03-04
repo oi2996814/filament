@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "PlatformGLX.h"
+#include <backend/platforms/PlatformGLX.h>
 
 #include <utils/Log.h>
 #include <utils/Panic.h>
@@ -22,8 +22,6 @@
 #include <X11/Xlib.h>
 #include <GL/glx.h>
 #include <GL/glxext.h>
-
-#include "../OpenGLDriverFactory.h"
 
 #include <dlfcn.h>
 
@@ -130,7 +128,8 @@ namespace filament::backend {
 
 using namespace backend;
 
-Driver* PlatformGLX::createDriver(void* const sharedGLContext) noexcept {
+Driver* PlatformGLX::createDriver(void* const sharedGLContext,
+        const DriverConfig& driverConfig) noexcept {
     loadLibraries();
     // Get the display device
     mGLXDisplay = g_x11.openDisplay(NULL);
@@ -227,9 +226,9 @@ Driver* PlatformGLX::createDriver(void* const sharedGLContext) noexcept {
     g_glx.setCurrentContext(mGLXDisplay, mDummySurface, mDummySurface, mGLXContext);
 
     int result = bluegl::bind();
-    ASSERT_POSTCONDITION(!result, "Unable to load OpenGL entry points.");
+    FILAMENT_CHECK_POSTCONDITION(!result) << "Unable to load OpenGL entry points.";
 
-    return OpenGLDriverFactory::create(this, sharedGLContext);
+    return OpenGLPlatform::createDefaultDriver(this, sharedGLContext, driverConfig);
 }
 
 void PlatformGLX::terminate() noexcept {
@@ -240,16 +239,12 @@ void PlatformGLX::terminate() noexcept {
     bluegl::unbind();
 }
 
-Platform::SwapChain* PlatformGLX::createSwapChain(void* nativeWindow, uint64_t& flags) noexcept {
-    // Transparent swap chain is not supported
-    flags &= ~SWAP_CHAIN_CONFIG_TRANSPARENT;
+Platform::SwapChain* PlatformGLX::createSwapChain(void* nativeWindow, uint64_t flags) noexcept {
     return (SwapChain*)nativeWindow;
 }
 
 Platform::SwapChain* PlatformGLX::createSwapChain(
-        uint32_t width, uint32_t height, uint64_t& flags) noexcept {
-    // Transparent swap chain is not supported
-    flags &= ~SWAP_CHAIN_CONFIG_TRANSPARENT;
+        uint32_t width, uint32_t height, uint64_t flags) noexcept {
     int pbufferAttribs[] = {
             GLX_PBUFFER_WIDTH, int(width),
             GLX_PBUFFER_HEIGHT, int(height),
@@ -270,28 +265,15 @@ void PlatformGLX::destroySwapChain(Platform::SwapChain* swapChain) noexcept {
     }
 }
 
-void PlatformGLX::makeCurrent(
-        Platform::SwapChain* drawSwapChain, Platform::SwapChain* readSwapChain) noexcept {
+bool PlatformGLX::makeCurrent(ContextType type, SwapChain* drawSwapChain,
+        SwapChain* readSwapChain) noexcept {
     g_glx.setCurrentContext(mGLXDisplay,
             (GLXDrawable)drawSwapChain, (GLXDrawable)readSwapChain, mGLXContext);
+    return true;
 }
 
 void PlatformGLX::commit(Platform::SwapChain* swapChain) noexcept {
     g_glx.swapBuffers(mGLXDisplay, (GLXDrawable)swapChain);
-}
-
-// TODO Implement GLX fences
-Platform::Fence* PlatformGLX::createFence() noexcept {
-    Fence* f = new Fence();
-    return f;
-}
-
-void PlatformGLX::destroyFence(Fence* fence) noexcept {
-    delete fence;
-}
-
-FenceStatus PlatformGLX::waitFence(Fence* fence, uint64_t timeout) noexcept {
-    return FenceStatus::CONDITION_SATISFIED;
 }
 
 } // namespace filament::backend

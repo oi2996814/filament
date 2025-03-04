@@ -17,10 +17,13 @@
 #ifndef TNT_FILAMENT_BACKEND_VULKANPIPELINECACHE_H
 #define TNT_FILAMENT_BACKEND_VULKANPIPELINECACHE_H
 
+#include "VulkanCommands.h"
+#include "VulkanMemory.h"
+
 #include <backend/DriverEnums.h>
 #include <backend/TargetBufferInfo.h>
 
-#include <private/backend/Program.h>
+#include "backend/Program.h"
 
 #include <bluevk/BlueVK.h>
 
@@ -28,61 +31,34 @@
 #include <utils/compiler.h>
 #include <utils/Hash.h>
 
+#include <list>
 #include <tsl/robin_map.h>
 #include <type_traits>
 #include <vector>
-
-#include "VulkanCommands.h"
-
-VK_DEFINE_HANDLE(VmaAllocator)
-VK_DEFINE_HANDLE(VmaAllocation)
-VK_DEFINE_HANDLE(VmaPool)
+#include <unordered_map>
 
 namespace filament::backend {
 
 struct VulkanProgram;
+struct VulkanBufferObject;
+struct VulkanTexture;
 
 // VulkanPipelineCache manages a cache of descriptor sets and pipelines.
 //
 // Please note the following limitations:
-//
-// - Push constants are not supported. (if adding support, see VkPipelineLayoutCreateInfo)
-// - Only DESCRIPTOR_TYPE_COUNT descriptor sets are bound at a time.
 // - Assumes that viewport and scissor should be dynamic. (not baked into VkPipeline)
-// - Assumes that uniform buffers should be visible across all shader stages.
-//
-class VulkanPipelineCache : public CommandBufferObserver {
+class VulkanPipelineCache {
 public:
     VulkanPipelineCache(VulkanPipelineCache const&) = delete;
     VulkanPipelineCache& operator=(VulkanPipelineCache const&) = delete;
 
-    static constexpr uint32_t UBUFFER_BINDING_COUNT = Program::BINDING_COUNT;
-    static constexpr uint32_t SAMPLER_BINDING_COUNT = MAX_SAMPLER_COUNT;
-    static constexpr uint32_t TARGET_BINDING_COUNT = MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT;
     static constexpr uint32_t SHADER_MODULE_COUNT = 2;
     static constexpr uint32_t VERTEX_ATTRIBUTE_COUNT = MAX_VERTEX_ATTRIBUTE_COUNT;
 
-    // Three descriptor set layouts: uniforms, combined image samplers, and input attachments.
-    static constexpr uint32_t DESCRIPTOR_TYPE_COUNT = 3;
-    static constexpr uint32_t INITIAL_DESCRIPTOR_SET_POOL_SIZE = 512;
-
+#if defined(__clang__)
     #pragma clang diagnostic push
     #pragma clang diagnostic warning "-Wpadded"
-
-    // The VertexArray POD is an array of buffer targets and an array of attributes that refer to
-    // those targets. It does not include any references to actual buffers, so you can think of it
-    // as a vertex assembler configuration. For simplicity it contains fixed-size arrays and does
-    // not store sizes; all unused entries are simply zeroed out.
-    struct VertexArray {
-        VkVertexInputAttributeDescription attributes[VERTEX_ATTRIBUTE_COUNT];
-        VkVertexInputBindingDescription buffers[VERTEX_ATTRIBUTE_COUNT];
-    };
-
-    // The ProgramBundle contains weak references to the compiled vertex and fragment shaders.
-    struct ProgramBundle {
-        VkShaderModule vertex;
-        VkShaderModule fragment;
-    };
+#endif
 
     // The RasterState POD contains standard graphics-related state like blending, culling, etc.
     // The following states are omitted because Filament never changes them:
@@ -101,7 +77,8 @@ public:
         VkBlendFactor         srcAlphaBlendFactor : 5;
         VkBlendFactor         dstAlphaBlendFactor : 5;
         VkColorComponentFlags colorWriteMask : 4;
-        uint8_t               rasterizationSamples;    // offset = 4 bytes
+        uint8_t               rasterizationSamples : 4;// offset = 4 bytes
+        uint8_t               depthClamp : 4;
         uint8_t               colorTargetCount;        // offset = 5 bytes
         BlendEquation         colorBlendOp : 4;        // offset = 6 bytes
         BlendEquation         alphaBlendOp : 4;
@@ -115,90 +92,26 @@ public:
 
     static_assert(sizeof(RasterState) == 16, "RasterState must not have implicit padding.");
 
-    struct UniformBufferBinding {
-        VkBuffer buffer;
-        VkDeviceSize offset;
-        VkDeviceSize size;
-    };
+    VulkanPipelineCache(VkDevice device);
 
-    // Upon construction, the pipeCache initializes some internal state but does not make any Vulkan
-    // calls. On destruction it will free any cached Vulkan objects that haven't already been freed.
-    VulkanPipelineCache();
-    ~VulkanPipelineCache();
-    void setDevice(VkDevice device, VmaAllocator allocator);
-
-    // Clients should initialize their copy of the raster state using this method. They can then
-    // mutate their copy and pass it back through bindRasterState().
-    const RasterState& getDefaultRasterState() const { return mDefaultRasterState; }
-
-    // Creates new descriptor sets if necessary and binds them using vkCmdBindDescriptorSets.
-    // Returns false if descriptor set allocation fails.
-    bool bindDescriptors(VkCommandBuffer cmdbuffer) noexcept;
+    void bindLayout(VkPipelineLayout layout) noexcept;
 
     // Creates a new pipeline if necessary and binds it using vkCmdBindPipeline.
-    // Returns false if an error occurred.
-    bool bindPipeline(VkCommandBuffer cmdbuffer) noexcept;
-
-    // Sets up a new scissor rectangle if it has been dirtied.
-    void bindScissor(VkCommandBuffer cmdbuffer, VkRect2D scissor) noexcept;
+    void bindPipeline(VulkanCommandBuffer* commands);
 
     // Each of the following methods are fast and do not make Vulkan calls.
-    void bindProgram(const VulkanProgram& program) noexcept;
-    void bindRasterState(const RasterState& rasterState) noexcept;
+    void bindProgram(fvkmemory::resource_ptr<VulkanProgram> program) noexcept;
+    void bindRasterState(RasterState const& rasterState) noexcept;
     void bindRenderPass(VkRenderPass renderPass, int subpassIndex) noexcept;
     void bindPrimitiveTopology(VkPrimitiveTopology topology) noexcept;
-    void bindUniformBuffer(uint32_t bindingIndex, VkBuffer uniformBuffer,
-            VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE) noexcept;
-    void bindSamplers(VkDescriptorImageInfo samplers[SAMPLER_BINDING_COUNT]) noexcept;
-    void bindInputAttachment(uint32_t bindingIndex, VkDescriptorImageInfo imageInfo) noexcept;
-    void bindVertexArray(const VertexArray& varray) noexcept;
-
-    // Gets the current UBO at the given slot, useful for push / pop.
-    UniformBufferBinding getUniformBufferBinding(uint32_t bindingIndex) const noexcept;
-
-    // Checks if the given uniform is bound to any slot, and if so binds "null" to that slot.
-    // Also invalidates all cached descriptors that refer to the given buffer.
-    // This is only necessary when the client knows that the UBO is about to be destroyed.
-    void unbindUniformBuffer(VkBuffer uniformBuffer) noexcept;
-
-    // Checks if an image view is bound to any sampler, and if so resets that particular slot.
-    // Also invalidates all cached descriptors that refer to the given image view.
-    // This is only necessary when the client knows that a texture is about to be destroyed.
-    void unbindImageView(VkImageView imageView) noexcept;
-
-    // NOTE: In theory we should proffer "unbindSampler" but in practice we never destroy samplers.
+    void bindVertexArray(VkVertexInputAttributeDescription const* attribDesc,
+            VkVertexInputBindingDescription const* bufferDesc, uint8_t count);
 
     // Destroys all managed Vulkan objects. This should be called before changing the VkDevice.
-    void destroyCache() noexcept;
-
-    // vkCmdBindPipeline and vkCmdBindDescriptorSets establish bindings to a specific command
-    // buffer; they are not global to the device. Therefore we need to be notified when a
-    // new command buffer becomes active.
-    void onCommandBuffer(const VulkanCommandBuffer& cmdbuffer) override;
-
-    // Injects a dummy texture that can be used to clear out old descriptor sets.
-    void setDummyTexture(VkImageView imageView) {
-        mDummySamplerInfo.imageView = imageView;
-        mDummyTargetInfo.imageView = imageView;
-    }
+    void terminate() noexcept;
+    void gc() noexcept;
 
 private:
-
-    // PIPELINE LAYOUT CACHE KEY
-    // -------------------------
-
-    // The cache key for pipeline layouts represents 32 samplers, each with 2 bits (one for each
-    // shader stage).
-    using PipelineLayoutKey = utils::bitset64;
-
-    struct PipelineLayoutKeyHashFn {
-        size_t operator()(const PipelineLayoutKey& key) const;
-    };
-
-    struct PipelineLayoutKeyEqual {
-        bool operator()(const PipelineLayoutKey& k1, const PipelineLayoutKey& k2) const;
-    };
-
     // PIPELINE CACHE KEY
     // ------------------
 
@@ -235,9 +148,9 @@ private:
         operator VkVertexInputBindingDescription() const {
             return { binding, stride, (VkVertexInputRate) inputRate };
         }
-        uint16_t    binding;
-        uint16_t    inputRate;
-        uint32_t    stride;
+        uint16_t binding;
+        uint16_t inputRate;
+        uint32_t stride;
     };
 
     // The pipeline key is a POD that represents all currently bound states that form the immutable
@@ -251,9 +164,10 @@ private:
         VertexInputBindingDescription vertexBuffers[VERTEX_ATTRIBUTE_COUNT];      //  128 : 156
         RasterState rasterState;                                                  //  16  : 284
         uint32_t padding;                                                         //  4   : 300
+        VkPipelineLayout layout;                                                  //  8   : 304
     };
 
-    static_assert(sizeof(PipelineKey) == 304, "PipelineKey must not have implicit padding.");
+    static_assert(sizeof(PipelineKey) == 312, "PipelineKey must not have implicit padding.");
 
     using PipelineHashFn = utils::hash::MurmurHashFn<PipelineKey>;
 
@@ -261,170 +175,40 @@ private:
         bool operator()(const PipelineKey& k1, const PipelineKey& k2) const;
     };
 
-    // DESCRIPTOR SET CACHE KEY
-    // ------------------------
-
-    // Equivalent to VkDescriptorImageInfo but with explicit padding.
-    struct DescriptorImageInfo {
-        DescriptorImageInfo& operator=(const VkDescriptorImageInfo& that) {
-            sampler = that.sampler;
-            imageView = that.imageView;
-            imageLayout = that.imageLayout;
-            padding = 0;
-            return *this;
-        }
-        operator VkDescriptorImageInfo() const { return { sampler, imageView, imageLayout }; }
-
-        // TODO: replace the 64-bit sampler handle with `uint32_t samplerParams` and remove the
-        // padding field. This is possible if we have access to the VulkanSamplerCache.
-        VkSampler sampler;
-
-        VkImageView imageView;
-        VkImageLayout imageLayout;
-        uint32_t padding;
-    };
-
-    // We store size with 32 bits, so our "WHOLE" sentinel is different from Vk.
-    static const uint32_t WHOLE_SIZE = 0xffffffffu;
-
-    // Represents all the Vulkan state that comprises a bound descriptor set.
-    struct DescriptorKey {
-        VkBuffer uniformBuffers[UBUFFER_BINDING_COUNT];             //   96     0
-        DescriptorImageInfo samplers[SAMPLER_BINDING_COUNT];        //  768    96
-        DescriptorImageInfo inputAttachments[TARGET_BINDING_COUNT]; //  192   864
-        uint32_t uniformBufferOffsets[UBUFFER_BINDING_COUNT];       //   48  1056
-        uint32_t uniformBufferSizes[UBUFFER_BINDING_COUNT];         //   48  1104
-    };
-    static_assert(offsetof(DescriptorKey, samplers)              == 96);
-    static_assert(offsetof(DescriptorKey, inputAttachments)      == 864);
-    static_assert(offsetof(DescriptorKey, uniformBufferOffsets)  == 1056);
-    static_assert(offsetof(DescriptorKey, uniformBufferSizes)    == 1104);
-    static_assert(sizeof(DescriptorKey) == 1152, "DescriptorKey must not have implicit padding.");
-
-    using DescHashFn = utils::hash::MurmurHashFn<DescriptorKey>;
-
-    struct DescEqual {
-        bool operator()(const DescriptorKey& k1, const DescriptorKey& k2) const;
-    };
-
+#if defined(__clang__)
     #pragma clang diagnostic pop
-
-    // CACHE ENTRY STRUCTS
-    // -------------------
+#endif
 
     // The timestamp associated with a given cache entry represents time as a count of flush
     // events since the cache was constructed. If any cache entry was most recently used over
-    // VK_MAX_PIPELINE_AGE flushes in the past, then we can be sure that it is no longer
+    // FVK_MAX_PIPELINE_AGE flushes in the past, then we can be sure that it is no longer
     // being used by the GPU, and is therefore safe to destroy or reclaim.
     using Timestamp = uint64_t;
     Timestamp mCurrentTime = 0;
-
-    // The descriptor set cache entry is a group of descriptor sets that are bound simultaneously.
-    struct DescriptorCacheEntry {
-        std::array<VkDescriptorSet, DESCRIPTOR_TYPE_COUNT> handles;
-        Timestamp lastUsed;
-        PipelineLayoutKey pipelineLayout;
-    };
 
     struct PipelineCacheEntry {
         VkPipeline handle;
         Timestamp lastUsed;
     };
 
-    struct PipelineLayoutCacheEntry {
-        VkPipelineLayout handle;
-        Timestamp lastUsed;
-
-        std::array<VkDescriptorSetLayout, DESCRIPTOR_TYPE_COUNT> descriptorSetLayouts;
-
-        // Each pipeline layout has 3 arenas of unused descriptors (one for each binding type).
-        //
-        // The difference between the "arenas" and the "pool" are as follows.
-        //
-        // - The "pool" is a single, centralized factory for all descriptors (VkDescriptorPool).
-        //
-        // - Each "arena" is a set of unused (but alive) descriptors that can only be used with a
-        //   specific pipeline layout and a specific binding type. We manually manage each arena.
-        //   The arenas are created in an empty state, and they are gradually populated as new
-        //   descriptors are reclaimed over time.  This is quite different from the pool, which is
-        //   given a fixed size when it is constructed.
-        //
-        std::array<std::vector<VkDescriptorSet>, DESCRIPTOR_TYPE_COUNT> descriptorSetArenas;
-    };
-
-    // CACHE CONTAINERS
-    // ----------------
-
-    using PipelineLayoutMap = tsl::robin_map<PipelineLayoutKey , PipelineLayoutCacheEntry,
-            PipelineLayoutKeyHashFn, PipelineLayoutKeyEqual>;
     using PipelineMap = tsl::robin_map<PipelineKey, PipelineCacheEntry,
             PipelineHashFn, PipelineEqual>;
-    using DescriptorMap = tsl::robin_map<DescriptorKey, DescriptorCacheEntry,
-            DescHashFn, DescEqual>;
 
-    PipelineLayoutMap mPipelineLayouts;
+    PipelineCacheEntry* getOrCreatePipeline() noexcept;
+
     PipelineMap mPipelines;
-    DescriptorMap mDescriptorSets;
 
     // These helpers all return unstable pointers that should not be stored.
-    DescriptorCacheEntry* createDescriptorSets() noexcept;
     PipelineCacheEntry* createPipeline() noexcept;
-    PipelineLayoutCacheEntry* getOrCreatePipelineLayout() noexcept;
-
-    // Misc helper methods.
-    void destroyLayoutsAndDescriptors() noexcept;
-    VkDescriptorPool createDescriptorPool(uint32_t size) const;
-    void growDescriptorPool() noexcept;
 
     // Immutable state.
     VkDevice mDevice = VK_NULL_HANDLE;
-    VmaAllocator mAllocator = VK_NULL_HANDLE;
-    const RasterState mDefaultRasterState;
 
     // Current requirements for the pipeline layout, pipeline, and descriptor sets.
-    PipelineLayoutKey mLayoutRequirements = {};
     PipelineKey mPipelineRequirements = {};
-    DescriptorKey mDescriptorRequirements = {};
 
-    // Current bindings for the pipeline layout, pipeline, and descriptor sets.
-    PipelineLayoutKey mBoundLayout = {};
+    // Current bindings for the pipeline and descriptor sets.
     PipelineKey mBoundPipeline = {};
-    DescriptorKey mBoundDescriptor = {};
-
-    // Current state for scissoring.
-    VkRect2D mCurrentScissor = {};
-
-    // The descriptor set pool starts out with a decent number of descriptor sets.  The cache can
-    // grow the pool by re-creating it with a larger size.  See growDescriptorPool().
-    VkDescriptorPool mDescriptorPool;
-
-    // This describes the number of descriptor sets in mDescriptorPool. Note that this needs to be
-    // multiplied by DESCRIPTOR_TYPE_COUNT to get the actual number of descriptor sets. Also note
-    // that the number of low-level "descriptors" (not descriptor *sets*) is actually much more than
-    // this size. It can be computed only by factoring in UBUFFER_BINDING_COUNT etc.
-    uint32_t mDescriptorPoolSize = INITIAL_DESCRIPTOR_SET_POOL_SIZE;
-
-    // To get the actual number of descriptor sets that have been allocated from the pool,
-    // take the sum of mDescriptorArenasCount (these are inactive descriptor sets) and the
-    // number of entries in the mDescriptorPool map (active descriptor sets). Multiply the result by
-    // DESCRIPTOR_TYPE_COUNT.
-    uint32_t mDescriptorArenasCount = 0;
-
-    // After a growth event (i.e. when the VkDescriptorPool is replaced with a bigger version), all
-    // currently used descriptors are moved into the "extinct" sets so that they can be safely
-    // destroyed a few frames later.
-    std::vector<VkDescriptorPool> mExtinctDescriptorPools;
-    std::vector<DescriptorCacheEntry> mExtinctDescriptorBundles;
-
-    VkDescriptorBufferInfo mDummyBufferInfo = {};
-    VkWriteDescriptorSet mDummyBufferWriteInfo = {};
-    VkDescriptorImageInfo mDummySamplerInfo = {};
-    VkWriteDescriptorSet mDummySamplerWriteInfo = {};
-    VkDescriptorImageInfo mDummyTargetInfo = {};
-    VkWriteDescriptorSet mDummyTargetWriteInfo = {};
-
-    VkBuffer mDummyBuffer;
-    VmaAllocation mDummyMemory;
 };
 
 } // namespace filament::backend

@@ -14,10 +14,20 @@
  * limitations under the License.
  */
 
-#include "details/Renderer.h"
+#include <filament/Renderer.h>
+
+#include "ResourceAllocator.h"
 
 #include "details/Engine.h"
+#include "details/Renderer.h"
 #include "details/View.h"
+
+#include <utils/FixedCapacityVector.h>
+
+#include <utility>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
@@ -25,60 +35,84 @@ using namespace math;
 using namespace backend;
 
 Engine* Renderer::getEngine() noexcept {
-    return &upcast(this)->getEngine();
+    return &downcast(this)->getEngine();
 }
 
 void Renderer::render(View const* view) {
-    upcast(this)->render(upcast(view));
+    downcast(this)->render(downcast(view));
 }
 
-bool Renderer::beginFrame(SwapChain* swapChain, uint64_t vsyncSteadyClockTimeNano) {
-    return upcast(this)->beginFrame(upcast(swapChain), vsyncSteadyClockTimeNano);
+void Renderer::setPresentationTime(int64_t const monotonic_clock_ns) {
+    downcast(this)->setPresentationTime(monotonic_clock_ns);
+}
+
+void Renderer::skipFrame(uint64_t const vsyncSteadyClockTimeNano) {
+    downcast(this)->skipFrame(vsyncSteadyClockTimeNano);
+}
+
+bool Renderer::beginFrame(SwapChain* swapChain, uint64_t const vsyncSteadyClockTimeNano) {
+    return downcast(this)->beginFrame(downcast(swapChain), vsyncSteadyClockTimeNano);
 }
 
 void Renderer::copyFrame(SwapChain* dstSwapChain, filament::Viewport const& dstViewport,
-        filament::Viewport const& srcViewport, CopyFrameFlag flags) {
-    upcast(this)->copyFrame(upcast(dstSwapChain), dstViewport, srcViewport, flags);
+        filament::Viewport const& srcViewport, CopyFrameFlag const flags) {
+    downcast(this)->copyFrame(downcast(dstSwapChain), dstViewport, srcViewport, flags);
 }
 
-void Renderer::readPixels(uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
+void Renderer::readPixels(uint32_t const xoffset, uint32_t const yoffset, uint32_t const width, uint32_t const height,
         PixelBufferDescriptor&& buffer) {
-    upcast(this)->readPixels(xoffset, yoffset, width, height, std::move(buffer));
+    downcast(this)->readPixels(xoffset, yoffset, width, height, std::move(buffer));
 }
 
 void Renderer::readPixels(RenderTarget* renderTarget,
-        uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
+        uint32_t const xoffset, uint32_t const yoffset, uint32_t const width, uint32_t const height,
         PixelBufferDescriptor&& buffer) {
-    upcast(this)->readPixels(upcast(renderTarget),
+    downcast(this)->readPixels(downcast(renderTarget),
             xoffset, yoffset, width, height, std::move(buffer));
 }
 
 void Renderer::endFrame() {
-    upcast(this)->endFrame();
+    downcast(this)->endFrame();
 }
 
 double Renderer::getUserTime() const {
-    return upcast(this)->getUserTime().count();
+    return downcast(this)->getUserTime();
 }
 
 void Renderer::resetUserTime() {
-    upcast(this)->resetUserTime();
+    downcast(this)->resetUserTime();
 }
 
 void Renderer::setDisplayInfo(const DisplayInfo& info) noexcept {
-    upcast(this)->setDisplayInfo(info);
+    downcast(this)->setDisplayInfo(info);
 }
 
 void Renderer::setFrameRateOptions(FrameRateOptions const& options) noexcept {
-    upcast(this)->setFrameRateOptions(options);
+    downcast(this)->setFrameRateOptions(options);
 }
 
 void Renderer::setClearOptions(const ClearOptions& options) {
-    upcast(this)->setClearOptions(options);
+    downcast(this)->setClearOptions(options);
+}
+
+Renderer::ClearOptions const& Renderer::getClearOptions() const noexcept {
+    return downcast(this)->getClearOptions();
 }
 
 void Renderer::renderStandaloneView(View const* view) {
-    upcast(this)->renderStandaloneView(upcast(view));
+    downcast(this)->renderStandaloneView(downcast(view));
+}
+
+void Renderer::setVsyncTime(uint64_t const steadyClockTimeNano) noexcept {
+    downcast(this)->setVsyncTime(steadyClockTimeNano);
+}
+
+utils::FixedCapacityVector<Renderer::FrameInfo> Renderer::getFrameInfoHistory(size_t const historySize) const noexcept {
+    return downcast(this)->getFrameInfoHistory(historySize);
+}
+
+size_t Renderer::getMaxFrameHistorySize() const noexcept {
+    return downcast(this)->getMaxFrameHistorySize();
 }
 
 } // namespace filament

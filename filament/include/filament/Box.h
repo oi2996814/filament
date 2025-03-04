@@ -21,10 +21,14 @@
 
 #include <utils/compiler.h>
 
-#include <limits>
-
+#include <math/mat3.h>
 #include <math/mat4.h>
 #include <math/vec3.h>
+#include <math/vec4.h>
+
+#include <float.h>
+
+#include <stddef.h>
 
 namespace filament {
 
@@ -70,7 +74,7 @@ public:
      * @return This bounding box
      */
     Box& set(const math::float3& min, const math::float3& max) noexcept {
-        // float3 ctor needed for visual studio
+        // float3 ctor needed for Visual Studio
         center     = (max + min) * math::float3(0.5f);
         halfExtent = (max - min) * math::float3(0.5f);
         return *this;
@@ -104,22 +108,24 @@ public:
     }
 
     /**
-     * Computes the bounding box of a box transformed by a rigid transform
+     * Transform a Box by a linear transform and a translation.
+     *
+     * @param m a 3x3 matrix, the linear transform
+     * @param t a float3, the translation
      * @param box the box to transform
-     * @param m a 4x4 matrix that must be a rigid transform
-     * @return the bounding box of the transformed box.
-     *         Result is undefined if \p m is not a rigid transform
+     * @return the bounding box of the transformed box
      */
-    friend Box rigidTransform(Box const& box, const math::mat4f& m) noexcept;
+    static Box transform(const math::mat3f& m, math::float3 const& t, const Box& box) noexcept {
+        return { m * box.center + t, abs(m) * box.halfExtent };
+    }
 
     /**
-     * Computes the bounding box of a box transformed by a rigid transform
-     * @param box the box to transform
-     * @param m a 3x3 matrix that must be a rigid transform
-     * @return the bounding box of the transformed box.
-     *         Result is undefined if \p m is not a rigid transform
+     * @deprecated Use transform() instead
+     * @see transform()
      */
-    friend Box rigidTransform(Box const& box, const math::mat3f& m) noexcept;
+    friend Box rigidTransform(Box const& box, const math::mat4f& m) noexcept {
+        return transform(m.upperLeft(), m[3].xyz, box);
+    }
 };
 
 /**
@@ -128,17 +134,17 @@ public:
 struct UTILS_PUBLIC Aabb {
 
     /** min coordinates */
-    math::float3 min = std::numeric_limits<float>::max();
+    math::float3 min = FLT_MAX;
 
     /** max coordinates */
-    math::float3 max = std::numeric_limits<float>::lowest();
+    math::float3 max = -FLT_MAX;
 
     /**
      * Computes the center of the box.
      * @return (max + min)/2
      */
     math::float3 center() const noexcept {
-        // float3 ctor needed for visual studio
+        // float3 ctor needed for Visual Studio
         return (max + min) * math::float3(0.5f);
     }
 
@@ -147,7 +153,7 @@ struct UTILS_PUBLIC Aabb {
      * @return (max - min)/2
      */
     math::float3 extent() const noexcept {
-        // float3 ctor needed for visual studio
+        // float3 ctor needed for Visual Studio
         return (max - min) * math::float3(0.5f);
     }
 
@@ -168,13 +174,26 @@ struct UTILS_PUBLIC Aabb {
         value_type const* data() const { return vertices; }
         value_type * data() { return vertices; }
         size_t size() const { return 8; }
+        value_type const& operator[](size_t i) const noexcept { return vertices[i]; }
+        value_type& operator[](size_t i) noexcept { return vertices[i]; }
         value_type vertices[8];
     };
 
     /**
      * Returns the 8 corner vertices of the AABB.
      */
-    Corners getCorners() const;
+    Corners getCorners() const {
+        return Corners{ .vertices = {
+                { min.x, min.y, min.z },
+                { max.x, min.y, min.z },
+                { min.x, max.y, min.z },
+                { max.x, max.y, min.z },
+                { min.x, min.y, max.z },
+                { max.x, min.y, max.z },
+                { min.x, max.y, max.z },
+                { max.x, max.y, max.z },
+        }};
+    }
 
     /**
      * Returns whether the box contains a given point.
@@ -182,15 +201,46 @@ struct UTILS_PUBLIC Aabb {
      * @param p the point to test
      * @return the maximum signed distance to the box. Negative if p is in the box
      */
-    float contains(math::float3 p) const noexcept;
+    float contains(math::float3 p) const noexcept {
+        // we don't use std::max to avoid a dependency on <algorithm>
+        auto const maximum = [](auto a, auto b) { return a > b ? a : b; };
+        float d = min.x - p.x;
+        d = maximum(d, min.y - p.y);
+        d = maximum(d, min.z - p.z);
+        d = maximum(d, p.x - max.x);
+        d = maximum(d, p.y - max.y);
+        d = maximum(d, p.z - max.z);
+        return d;
+    }
 
     /**
      * Applies an affine transformation to the AABB.
      *
-     * @param m the 4x4 transformation to apply
+     * @param m the 3x3 transformation to apply
+     * @param t the translation
      * @return the transformed box
      */
-    Aabb transform(const math::mat4f& m) const noexcept;
+    static Aabb transform(const math::mat3f& m, math::float3 const& t, const Aabb& box) noexcept {
+        // Fast AABB transformation per Jim Arvo in Graphics Gems (1990).
+        Aabb result{ t, t };
+        for (size_t col = 0; col < 3; ++col) {
+            for (size_t row = 0; row < 3; ++row) {
+                const float a = m[col][row] * box.min[col];
+                const float b = m[col][row] * box.max[col];
+                result.min[row] += a < b ? a : b;
+                result.max[row] += a < b ? b : a;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @deprecated Use transform() instead
+     * @see transform()
+     */
+    Aabb transform(const math::mat4f& m) const noexcept {
+        return transform(m.upperLeft(), m[3].xyz, *this);
+    }
 };
 
 } // namespace filament

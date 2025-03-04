@@ -17,23 +17,40 @@
 #ifndef TNT_FILAMENT_RESOURCEALLOCATOR_H
 #define TNT_FILAMENT_RESOURCEALLOCATOR_H
 
+#include <filament/Engine.h>
+
 #include <backend/DriverEnums.h>
 #include <backend/Handle.h>
 #include <backend/TargetBufferInfo.h>
 
-#include "private/backend/DriverApiForward.h"
+#include "backend/DriverApiForward.h"
 
 #include <utils/Hash.h>
 
 #include <array>
+#include <memory>
+#include <optional>
+#include <utility>
 #include <vector>
 
+#include <cstddef>
+#include <stddef.h>
 #include <stdint.h>
 
 namespace filament {
 
+class ResourceAllocatorDisposer;
+
 // The only reason we use an interface here is for unit-tests, so we can mock this allocator.
 // This is not too time-critical, so that's okay.
+
+class ResourceAllocatorDisposerInterface {
+public:
+    virtual void destroy(backend::TextureHandle handle) noexcept = 0;
+protected:
+    virtual ~ResourceAllocatorDisposerInterface();
+};
+
 class ResourceAllocatorInterface {
 public:
     virtual backend::RenderTargetHandle createRenderTarget(const char* name,
@@ -41,6 +58,7 @@ public:
             uint32_t width,
             uint32_t height,
             uint8_t samples,
+            uint8_t layerCount,
             backend::MRT color,
             backend::TargetBufferInfo depth,
             backend::TargetBufferInfo stencil) noexcept = 0;
@@ -55,14 +73,20 @@ public:
 
     virtual void destroyTexture(backend::TextureHandle h) noexcept = 0;
 
+    virtual ResourceAllocatorDisposerInterface& getDisposer() noexcept = 0;
+
 protected:
     virtual ~ResourceAllocatorInterface();
 };
 
-
 class ResourceAllocator final : public ResourceAllocatorInterface {
 public:
-    explicit ResourceAllocator(backend::DriverApi& driverApi) noexcept;
+    explicit ResourceAllocator(std::shared_ptr<ResourceAllocatorDisposer> disposer,
+            Engine::Config const& config, backend::DriverApi& driverApi) noexcept;
+
+    explicit ResourceAllocator(
+            Engine::Config const& config, backend::DriverApi& driverApi) noexcept;
+
     ~ResourceAllocator() noexcept override;
 
     void terminate() noexcept;
@@ -72,6 +96,7 @@ public:
             uint32_t width,
             uint32_t height,
             uint8_t samples,
+            uint8_t layerCount,
             backend::MRT color,
             backend::TargetBufferInfo depth,
             backend::TargetBufferInfo stencil) noexcept override;
@@ -86,12 +111,12 @@ public:
 
     void destroyTexture(backend::TextureHandle h) noexcept override;
 
-    void gc() noexcept;
+    ResourceAllocatorDisposerInterface& getDisposer() noexcept override;
+
+    void gc(bool skippedFrame = false) noexcept;
 
 private:
-    // TODO: these should be settings of the engine
-    static constexpr size_t CACHE_CAPACITY = 64u << 20u;   // 64 MiB
-    static constexpr size_t CACHE_MAX_AGE  = 30u;
+    size_t const mCacheMaxAge;
 
     struct TextureKey {
         const char* name; // doesn't participate in the hash
@@ -153,8 +178,7 @@ private:
     template<typename T>
     struct Hasher<backend::Handle<T>> {
         std::size_t operator()(backend::Handle<T> const& s) const noexcept {
-            std::hash<typename backend::Handle<T>::HandleId> hash{};
-            return hash(s.getId());
+            return s.getId();
         }
     };
 
@@ -163,17 +187,21 @@ private:
     template<typename Key, typename Value, typename Hasher = Hasher<Key>>
     class AssociativeContainer {
         // We use a std::vector instead of a std::multimap because we don't expect many items
-        // in the cache and std::multimap generates tons of code. Even with more items, we
-        // could improve this trivially by using a sorted std::vector.
+        // in the cache and std::multimap generates tons of code. std::multimap starts getting
+        // significantly better around 1000 items.
         using Container = std::vector<std::pair<Key, Value>>;
         Container mContainer;
+
     public:
+        AssociativeContainer();
+        ~AssociativeContainer() noexcept;
         using iterator = typename Container::iterator;
         using const_iterator = typename Container::const_iterator;
         using key_type = typename Container::value_type::first_type;
         using value_type = typename Container::value_type::second_type;
 
         size_t size() const { return mContainer.size(); }
+        bool empty() const { return size() == 0; }
         iterator begin() { return mContainer.begin(); }
         const_iterator begin() const { return mContainer.begin(); }
         iterator end() { return mContainer.end(); }
@@ -187,14 +215,36 @@ private:
 
     using CacheContainer = AssociativeContainer<TextureKey, TextureCachePayload>;
 
-    CacheContainer::iterator purge(CacheContainer::iterator const& pos);
+    CacheContainer::iterator
+    purge(CacheContainer::iterator const& pos);
 
     backend::DriverApi& mBackend;
+    std::shared_ptr<ResourceAllocatorDisposer> mDisposer;
     CacheContainer mTextureCache;
-    AssociativeContainer<backend::TextureHandle, TextureKey> mInUseTextures;
     size_t mAge = 0;
     uint32_t mCacheSize = 0;
+    uint32_t mCacheSizeHiWaterMark = 0;
     static constexpr bool mEnabled = true;
+
+    friend class ResourceAllocatorDisposer;
+};
+
+class ResourceAllocatorDisposer final : public ResourceAllocatorDisposerInterface {
+    using TextureKey = ResourceAllocator::TextureKey;
+public:
+    explicit ResourceAllocatorDisposer(backend::DriverApi& driverApi) noexcept;
+    ~ResourceAllocatorDisposer() noexcept override;
+    void terminate() noexcept;
+    void destroy(backend::TextureHandle handle) noexcept override;
+
+private:
+    friend class ResourceAllocator;
+    void checkout(backend::TextureHandle handle, TextureKey key);
+    std::optional<TextureKey> checkin(backend::TextureHandle handle);
+
+    using InUseContainer = ResourceAllocator::AssociativeContainer<backend::TextureHandle, TextureKey>;
+    backend::DriverApi& mBackend;
+    InUseContainer mInUseTextures;
 };
 
 } // namespace filament

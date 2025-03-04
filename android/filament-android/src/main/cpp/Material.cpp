@@ -19,17 +19,24 @@
 #include <filament/Material.h>
 
 #include "common/NioUtils.h"
+#include "common/CallbackUtils.h"
 
 using namespace filament;
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_Material_nBuilderBuild(JNIEnv *env, jclass,
-        jlong nativeEngine, jobject buffer_, jint size) {
+        jlong nativeEngine, jobject buffer_, jint size, jint shBandCount, jint shadowQuality) {
     Engine* engine = (Engine*) nativeEngine;
     AutoBuffer buffer(env, buffer_, size);
-    Material* material = Material::Builder()
+    auto builder = Material::Builder();
+    if (shBandCount) {
+        builder.sphericalHarmonicsBandCount(shBandCount);
+    }
+    builder.shadowSamplingQuality((Material::Builder::ShadowSamplingQuality)shadowQuality);
+    Material* material = builder
             .package(buffer.getData(), buffer.getSize())
             .build(*engine);
+
     return (jlong) material;
 }
 
@@ -107,6 +114,22 @@ Java_com_google_android_filament_Material_nGetRefractionType(JNIEnv*, jclass,
 
 extern "C"
 JNIEXPORT jint JNICALL
+Java_com_google_android_filament_Material_nGetReflectionMode(JNIEnv*, jclass,
+        jlong nativeMaterial) {
+    Material* material = (Material*) nativeMaterial;
+    return (jint) material->getReflectionMode();
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_google_android_filament_Material_nGetFeatureLevel(JNIEnv*, jclass,
+        jlong nativeMaterial) {
+    Material* material = (Material*) nativeMaterial;
+    return (jint) material->getFeatureLevel();
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
 Java_com_google_android_filament_Material_nGetVertexDomain(JNIEnv*, jclass,
         jlong nativeMaterial) {
     Material* material = (Material*) nativeMaterial;
@@ -151,6 +174,14 @@ Java_com_google_android_filament_Material_nIsDoubleSided(JNIEnv*, jclass,
         jlong nativeMaterial) {
     Material* material = (Material*) nativeMaterial;
     return (jboolean) material->isDoubleSided();
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_google_android_filament_Material_nIsAlphaToCoverageEnabled(JNIEnv*, jclass,
+        jlong nativeMaterial) {
+    Material* material = (Material*) nativeMaterial;
+    return (jboolean) material->isAlphaToCoverageEnabled();
 }
 
 extern "C"
@@ -246,4 +277,18 @@ Java_com_google_android_filament_Material_nHasParameter(JNIEnv* env, jclass,
     bool hasParameter = material->hasParameter(name);
     env->ReleaseStringUTFChars(name_, name);
     return (jboolean) hasParameter;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_google_android_filament_Material_nCompile(JNIEnv *env, jclass clazz,
+        jlong nativeMaterial, jint priority, jint variants, jobject handler, jobject runnable) {
+    Material* material = (Material*) nativeMaterial;
+    JniCallback* jniCallback = JniCallback::make(env, handler, runnable);
+    material->compile(
+            (Material::CompilerPriorityQueue) priority,
+            (UserVariantFilterBit) variants,
+            jniCallback->getHandler(), [jniCallback](Material*){
+                JniCallback::postToJavaAndDestroy(jniCallback);
+            });
 }

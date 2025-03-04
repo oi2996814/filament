@@ -6,6 +6,10 @@ plugins {
 
 project.ext.isSample = true
 
+kotlin {
+    jvmToolchain(versions.jdk)
+}
+
 filamentTools {
     materialInputDir = project.layout.projectDirectory.dir("src/main/materials")
     materialOutputDir = project.layout.projectDirectory.dir("src/main/assets/materials")
@@ -15,6 +19,8 @@ clean.doFirst {
     delete "src/main/assets"
 }
 android {
+    namespace 'com.google.android.filament.litcube'
+
     compileSdkVersion versions.compileSdk
     defaultConfig {
         applicationId "com.google.android.filament.litcube"
@@ -32,6 +38,11 @@ android {
     // Telling aapt to not compress them allows to load them efficiently
     aaptOptions {
         noCompress 'filamat', 'ktx'
+    }
+
+    compileOptions {
+        sourceCompatibility versions.jdk
+        targetCompatibility versions.jdk
     }
 }
 

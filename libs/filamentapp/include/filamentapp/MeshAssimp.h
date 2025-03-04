@@ -56,6 +56,8 @@ public:
     explicit MeshAssimp(filament::Engine& engine);
     ~MeshAssimp();
 
+    // This function takes over the ownership of `materials` to prevent crashes due to the
+    // incorrect order of resource destruction.
     void addFromFile(const utils::Path& path,
             std::map<std::string, filament::MaterialInstance*>& materials,
             bool overrideMaterial = false);
@@ -127,19 +129,18 @@ private:
 
     filament::Material* mDefaultColorMaterial = nullptr;
     filament::Material* mDefaultTransparentColorMaterial = nullptr;
-
     mutable std::unordered_map<uint64_t, filament::Material*> mGltfMaterialCache;
+    std::map<std::string, filament::MaterialInstance*> mMaterialInstances;
+
     filament::Texture* mDefaultMap = nullptr;
     filament::Texture* mDefaultNormalMap = nullptr;
-    float mDefaultMetallic = 0.0;
-    float mDefaultRoughness = 0.4;
+    float mDefaultMetallic = 0.0f;
+    float mDefaultRoughness = 0.4f;
     filament::sRGBColor mDefaultEmissive = filament::sRGBColor({0.0f, 0.0f, 0.0f});
 
     std::vector<utils::Entity> mRenderables;
 
     std::vector<filament::Texture*> mTextures;
-
-
 };
 
 #endif // TNT_FILAMENT_SAMPLE_MESH_ASSIMP_H

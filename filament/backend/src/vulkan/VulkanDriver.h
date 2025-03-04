@@ -17,135 +17,146 @@
 #ifndef TNT_FILAMENT_BACKEND_VULKANDRIVER_H
 #define TNT_FILAMENT_BACKEND_VULKANDRIVER_H
 
-#include "VulkanPipelineCache.h"
 #include "VulkanBlitter.h"
-#include "VulkanDisposer.h"
 #include "VulkanConstants.h"
 #include "VulkanContext.h"
 #include "VulkanFboCache.h"
+#include "VulkanHandles.h"
+#include "VulkanPipelineCache.h"
+#include "VulkanReadPixels.h"
 #include "VulkanSamplerCache.h"
 #include "VulkanStagePool.h"
-#include "VulkanUtility.h"
+#include "VulkanQueryManager.h"
+#include "vulkan/caching/VulkanDescriptorSetManager.h"
+#include "vulkan/caching/VulkanPipelineLayoutCache.h"
+#include "vulkan/memory/ResourceManager.h"
+#include "vulkan/memory/ResourcePointer.h"
+#include "vulkan/utils/Definitions.h"
 
-#include "private/backend/Driver.h"
-#include "private/backend/HandleAllocator.h"
+#include "backend/DriverEnums.h"
+
 #include "DriverBase.h"
+#include "private/backend/Driver.h"
 
-#include <utils/compiler.h>
 #include <utils/Allocator.h>
+#include <utils/compiler.h>
 
 namespace filament::backend {
 
 class VulkanPlatform;
-struct VulkanSamplerGroup;
+
+// The maximum number of attachments for any renderpass (color + resolve + depth)
+constexpr uint8_t MAX_RENDERTARGET_ATTACHMENT_TEXTURES =
+        MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT * 2 + 1;
 
 class VulkanDriver final : public DriverBase {
 public:
-    static Driver* create(VulkanPlatform* platform,
-            const char* const* ppEnabledExtensions, uint32_t enabledExtensionCount) noexcept;
+    static Driver* create(VulkanPlatform* platform, VulkanContext const& context,
+            Platform::DriverConfig const& driverConfig) noexcept;
+
+#if FVK_ENABLED(FVK_DEBUG_DEBUG_UTILS)
+    // Encapsulates the VK_EXT_debug_utils extension.  In particular, we use
+    // vkSetDebugUtilsObjectNameEXT and vkCreateDebugUtilsMessengerEXT
+    class DebugUtils {
+    public:
+        static void setName(VkObjectType type, uint64_t handle, char const* name);
+
+    private:
+        static DebugUtils* get();
+
+        DebugUtils(VkInstance instance, VkDevice device, VulkanContext const* context);
+        ~DebugUtils();
+
+        VkInstance const mInstance;
+        VkDevice const mDevice;
+        bool const mEnabled;
+        VkDebugUtilsMessengerEXT mDebugMessenger = VK_NULL_HANDLE;
+
+        static DebugUtils* mSingleton;
+
+        friend class VulkanDriver;
+    };
+#endif // FVK_ENABLED(FVK_DEBUG_DEBUG_UTILS)
 
 private:
+    template<typename D>
+    using resource_ptr = fvkmemory::resource_ptr<D>;
 
-    void debugCommandBegin(CommandStream* cmds, bool synchronous, const char* methodName) noexcept override;
+    static constexpr uint8_t MAX_SAMPLER_BINDING_COUNT = Program::SAMPLER_BINDING_COUNT;
 
-    inline VulkanDriver(VulkanPlatform* platform,
-            const char* const* ppEnabledExtensions, uint32_t enabledExtensionCount) noexcept;
+    void debugCommandBegin(CommandStream* cmds, bool synchronous,
+            const char* methodName) noexcept override;
+
+    inline VulkanDriver(VulkanPlatform* platform, VulkanContext const& context,
+            Platform::DriverConfig const& driverConfig) noexcept;
 
     ~VulkanDriver() noexcept override;
 
     Dispatcher getDispatcher() const noexcept final;
 
     ShaderModel getShaderModel() const noexcept final;
+    ShaderLanguage getShaderLanguage() const noexcept final;
 
     template<typename T>
     friend class ConcreteDispatcher;
 
-#define DECL_DRIVER_API(methodName, paramsDecl, params) \
+#define DECL_DRIVER_API(methodName, paramsDecl, params)                                            \
     UTILS_ALWAYS_INLINE inline void methodName(paramsDecl);
 
-#define DECL_DRIVER_API_SYNCHRONOUS(RetType, methodName, paramsDecl, params) \
+#define DECL_DRIVER_API_SYNCHRONOUS(RetType, methodName, paramsDecl, params)                       \
     RetType methodName(paramsDecl) override;
 
-#define DECL_DRIVER_API_RETURN(RetType, methodName, paramsDecl, params) \
-    RetType methodName##S() noexcept override; \
+#define DECL_DRIVER_API_RETURN(RetType, methodName, paramsDecl, params)                            \
+    RetType methodName##S() noexcept override;                                                     \
     UTILS_ALWAYS_INLINE inline void methodName##R(RetType, paramsDecl);
 
 #include "private/backend/DriverAPI.inc"
 
     VulkanDriver(VulkanDriver const&) = delete;
-    VulkanDriver& operator = (VulkanDriver const&) = delete;
+    VulkanDriver& operator=(VulkanDriver const&) = delete;
 
 private:
-
-    HandleAllocatorVK mHandleAllocator;
-
-    VulkanPlatform& mContextManager;
-
-    template<typename D, typename ... ARGS>
-    Handle<D> initHandle(ARGS&& ... args) noexcept {
-        return mHandleAllocator.allocateAndConstruct<D>(std::forward<ARGS>(args) ...);
-    }
-
-    template<typename D>
-    Handle<D> allocHandle() noexcept {
-        return mHandleAllocator.allocate<D>();
-    }
-
-    template<typename D, typename B, typename ... ARGS>
-    typename std::enable_if<std::is_base_of<B, D>::value, D>::type*
-    construct(Handle<B> const& handle, ARGS&& ... args) noexcept {
-        return mHandleAllocator.construct<D, B>(handle, std::forward<ARGS>(args) ...);
-    }
-
-    template<typename B, typename D,
-            typename = typename std::enable_if<std::is_base_of<B, D>::value, D>::type>
-    void destruct(Handle<B> handle, D const* p) noexcept {
-        return mHandleAllocator.deallocate(handle, p);
-    }
-
-    template<typename Dp, typename B>
-    typename std::enable_if_t<
-            std::is_pointer_v<Dp> &&
-            std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
-    handle_cast(Handle<B>& handle) noexcept {
-        return mHandleAllocator.handle_cast<Dp, B>(handle);
-    }
-
-    template<typename Dp, typename B>
-    inline typename std::enable_if_t<
-            std::is_pointer_v<Dp> &&
-            std::is_base_of_v<B, typename std::remove_pointer_t<Dp>>, Dp>
-    handle_cast(Handle<B> const& handle) noexcept {
-        return mHandleAllocator.handle_cast<Dp, B>(handle);
-    }
-
-    template<typename D, typename B>
-    void destruct(Handle<B> handle) noexcept {
-        destruct(handle, handle_cast<D const*>(handle));
-    }
-
-    // This version of destruct takes a VulkanContext and calls a terminate(VulkanContext&)
-    // on the handle before calling the dtor
-    template<typename Dp, typename B>
-    void destruct(VulkanContext& context, Handle<B> handle) noexcept {
-        auto ptr = handle_cast<Dp*>(handle);
-        ptr->terminate(context);
-        mHandleAllocator.deallocate(handle, ptr);
-    }
-
-    void refreshSwapChain();
     void collectGarbage();
 
+    VulkanPlatform* mPlatform = nullptr;
+    fvkmemory::ResourceManager mResourceManager;
+
+    resource_ptr<VulkanSwapChain> mCurrentSwapChain;
+    resource_ptr<VulkanRenderTarget> mDefaultRenderTarget;
+    VulkanRenderPass mCurrentRenderPass = {};
+    VmaAllocator mAllocator = VK_NULL_HANDLE;
+    VkDebugReportCallbackEXT mDebugCallback = VK_NULL_HANDLE;
+
     VulkanContext mContext = {};
+
+    VulkanCommands mCommands;
+    VulkanPipelineLayoutCache mPipelineLayoutCache;
     VulkanPipelineCache mPipelineCache;
-    VulkanDisposer mDisposer;
     VulkanStagePool mStagePool;
     VulkanFboCache mFramebufferCache;
     VulkanSamplerCache mSamplerCache;
     VulkanBlitter mBlitter;
-    VulkanSamplerGroup* mSamplerBindings[VulkanPipelineCache::SAMPLER_BINDING_COUNT] = {};
-    VkDebugReportCallbackEXT mDebugCallback = VK_NULL_HANDLE;
-    VkDebugUtilsMessengerEXT mDebugMessenger = VK_NULL_HANDLE;
+    VulkanReadPixels mReadPixels;
+    VulkanDescriptorSetManager mDescriptorSetManager;
+    VulkanQueryManager mQueryManager;
+
+    // This is necessary for us to write to push constants after binding a pipeline.
+    struct {
+        resource_ptr<VulkanProgram> program;
+        VkPipelineLayout pipelineLayout;
+        fvkutils::DescriptorSetMask descriptorSetMask;
+    } mBoundPipeline = {};
+
+    // We need to store information about a render pass to enable better barriers at the end of a
+    // renderpass.
+    struct {
+        using AttachmentArray =
+                fvkutils::StaticVector<VulkanAttachment, MAX_RENDERTARGET_ATTACHMENT_TEXTURES>;
+        AttachmentArray attachments;
+    } mRenderPassFboInfo = {};
+
+    bool const mIsSRGBSwapChainSupported;
+    backend::StereoscopicType const mStereoscopicType;
 };
 
 } // namespace filament::backend

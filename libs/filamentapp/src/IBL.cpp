@@ -25,6 +25,8 @@
 
 #include <ktxreader/Ktx1Reader.h>
 
+#include <imageio/ImageDecoder.h>
+
 #include <filament-iblprefilter/IBLPrefilterContext.h>
 
 #include <stb_image.h>
@@ -36,6 +38,8 @@
 #include <string>
 
 #include <string.h>
+
+#include <utils/Log.h>
 
 using namespace filament;
 using namespace filament::math;
@@ -52,6 +56,7 @@ IBL::~IBL() {
     mEngine.destroy(mTexture);
     mEngine.destroy(mSkybox);
     mEngine.destroy(mSkyboxTexture);
+    mEngine.destroy(mFogTexture);
 }
 
 bool IBL::loadFromEquirect(Path const& path) {
@@ -59,26 +64,51 @@ bool IBL::loadFromEquirect(Path const& path) {
         return false;
     }
 
-    int w, h;
-    stbi_info(path.getAbsolutePath().c_str(), &w, &h, nullptr);
-    if (w != h * 2) {
-        std::cerr << "not an equirectangular image!" << std::endl;
+    int w = 0, h = 0;
+    int n = 0;
+    size_t size = 0;
+    void* data = nullptr;
+    void* user = nullptr;
+    Texture::PixelBufferDescriptor::Callback destroyer{};
+
+    if (path.getExtension() == "exr") {
+        std::ifstream in_stream(path.getAbsolutePath().c_str(), std::ios::binary);
+        image::LinearImage* image = new image::LinearImage(
+                image::ImageDecoder::decode(in_stream, path.getAbsolutePath().c_str()));
+        w = image->getWidth();
+        h = image->getHeight();
+        n = image->getChannels();
+        size = w * h * n * sizeof(float);
+        data = image->getPixelRef();
+        user = image;
+        destroyer = [](void*, size_t, void* user) {
+            delete reinterpret_cast<image::LinearImage*>(user);
+        };
+    } else {
+        stbi_info(path.getAbsolutePath().c_str(), &w, &h, nullptr);
+        // load image as float
+        size = w * h * sizeof(float3);
+        data = (float3*)stbi_loadf(path.getAbsolutePath().c_str(), &w, &h, &n, 3);
+        destroyer = [](void* data, size_t, void*) {
+            stbi_image_free(data);
+        };
+    }
+
+    if (data == nullptr || n != 3) {
+        std::cerr << "Could not decode image " << std::endl;
+        destroyer(data, size, user);
         return false;
     }
 
-    // load image as float
-    int n;
-    const size_t size = w * h * sizeof(float3);
-    float3* const data = (float3*)stbi_loadf(path.getAbsolutePath().c_str(), &w, &h, &n, 3);
-    if (data == nullptr || n != 3) {
-        std::cerr << "Could not decode image " << std::endl;
+    if (w != h * 2) {
+        std::cerr << "not an equirectangular image!" << std::endl;
+        destroyer(data, size, user);
         return false;
     }
 
     // now load texture
     Texture::PixelBufferDescriptor buffer(
-            data, size,Texture::Format::RGB, Texture::Type::FLOAT,
-            [](void* buffer, size_t size, void* user) { stbi_image_free(buffer); });
+            data, size,Texture::Format::RGB, Texture::Type::FLOAT, destroyer, user);
 
     Texture* const equirect = Texture::Builder()
             .width((uint32_t)w)
@@ -93,12 +123,16 @@ bool IBL::loadFromEquirect(Path const& path) {
     IBLPrefilterContext context(mEngine);
     IBLPrefilterContext::EquirectangularToCubemap equirectangularToCubemap(context);
     IBLPrefilterContext::SpecularFilter specularFilter(context);
+    IBLPrefilterContext::IrradianceFilter irradianceFilter(context);
 
     mSkyboxTexture = equirectangularToCubemap(equirect);
 
     mEngine.destroy(equirect);
 
     mTexture = specularFilter(mSkyboxTexture);
+
+    mFogTexture = irradianceFilter({ .generateMipmap = false }, mSkyboxTexture);
+    mFogTexture->generateMipmaps(mEngine);
 
     mIndirectLight = IndirectLight::Builder()
             .reflections(mTexture)
@@ -136,9 +170,19 @@ bool IBL::loadFromKtx(const std::string& prefix) {
     mSkyboxTexture = Ktx1Reader::createTexture(&mEngine, skyKtx, false);
     mTexture = Ktx1Reader::createTexture(&mEngine, iblKtx, false);
 
+    // TODO: create the fog texture, it's a bit complicated because IBLPrefilter requires
+    //       the source image to have miplevels, and it's not guaranteed here and also
+    //       not guaranteed we can generate them (e.g. texture could be compressed)
+    //IBLPrefilterContext context(mEngine);
+    //IBLPrefilterContext::IrradianceFilter irradianceFilter(context);
+    //mFogTexture = irradianceFilter({ .generateMipmap=false }, mSkyboxTexture);
+    //mFogTexture->generateMipmaps(mEngine);
+
+
     if (!iblKtx->getSphericalHarmonics(mBands)) {
         return false;
     }
+    mHasSphericalHarmonics = true;
 
     mIndirectLight = IndirectLight::Builder()
             .reflections(mTexture)
@@ -170,6 +214,7 @@ bool IBL::loadFromDirectory(const utils::Path& path) {
     } else {
         return false;
     }
+    mHasSphericalHarmonics = true;
 
     // Read mip-mapped cubemap
     const std::string prefix = "m";
@@ -196,10 +241,10 @@ bool IBL::loadFromDirectory(const utils::Path& path) {
 
 bool IBL::loadCubemapLevel(filament::Texture** texture, const utils::Path& path, size_t level,
         std::string const& levelPrefix) const {
-    Texture::FaceOffsets offsets;
+    uint32_t dim;
     Texture::PixelBufferDescriptor buffer;
-    if (loadCubemapLevel(texture, &buffer, &offsets, path, level, levelPrefix)) {
-        (*texture)->setImage(mEngine, level, std::move(buffer), offsets);
+    if (loadCubemapLevel(texture, &buffer, &dim, path, level, levelPrefix)) {
+        (*texture)->setImage(mEngine, level, 0, 0, 0, dim, dim, 6, std::move(buffer));
         return true;
     }
     return false;
@@ -208,7 +253,7 @@ bool IBL::loadCubemapLevel(filament::Texture** texture, const utils::Path& path,
 bool IBL::loadCubemapLevel(
         filament::Texture** texture,
         Texture::PixelBufferDescriptor* outBuffer,
-        Texture::FaceOffsets* outOffsets,
+        uint32_t* dim,
         const utils::Path& path, size_t level, std::string const& levelPrefix) const {
     static const char* faceSuffix[6] = { "px", "nx", "py", "ny", "pz", "nz" };
 
@@ -248,8 +293,8 @@ bool IBL::loadCubemapLevel(
 
     // RGB_10_11_11_REV encoding: 4 bytes per pixel
     const size_t faceSize = size * size * sizeof(uint32_t);
+    *dim = size;
 
-    Texture::FaceOffsets offsets;
     Texture::PixelBufferDescriptor buffer(
             malloc(faceSize * 6), faceSize * 6,
             Texture::Format::RGB, Texture::Type::UINT_10F_11F_11F_REV,
@@ -259,8 +304,6 @@ bool IBL::loadCubemapLevel(
     uint8_t* p = static_cast<uint8_t*>(buffer.buffer);
 
     for (size_t j = 0; j < 6; j++) {
-        offsets[j] = faceSize * j;
-
         std::string faceName = levelPrefix + faceSuffix[j] + ".rgb32f";
         Path facePath(Path::concat(path, faceName));
         if (!facePath.exists()) {
@@ -284,7 +327,7 @@ bool IBL::loadCubemapLevel(
             break;
         }
 
-        memcpy(p + offsets[j], data, w * h * sizeof(uint32_t));
+        memcpy(p + faceSize * j, data, w * h * sizeof(uint32_t));
 
         stbi_image_free(data);
     }
@@ -292,7 +335,6 @@ bool IBL::loadCubemapLevel(
     if (!success) return false;
 
     *outBuffer = std::move(buffer);
-    *outOffsets = offsets;
 
     return true;
 }

@@ -24,16 +24,48 @@
 #include <utils/PrivateImplementation-impl.h>
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
+#include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 
 template class utils::PrivateImplementation<utils::io::ostream_>;
 
 namespace utils::io {
 
 ostream::~ostream() = default;
+
+void ostream::setConsumer(ConsumerCallback consumer, void* user) noexcept {
+    auto* const pImpl = mImpl;
+    std::lock_guard const lock(pImpl->mLock);
+    pImpl->mConsumer = { consumer, user };
+}
+
+ostream& flush(ostream& s) noexcept {
+    auto* const pImpl = s.mImpl;
+    pImpl->mLock.lock();
+    auto const callback = pImpl->mConsumer;
+    if (UTILS_UNLIKELY(callback.first)) {
+        auto& buf = s.getBuffer();
+        char const* const data = buf.get();
+        if (UTILS_LIKELY(data)) {
+            char* const str = strdup(data);
+            buf.reset();
+            pImpl->mLock.unlock();
+            // call ConsumerCallback without lock held
+            callback.first(callback.second, str);
+            ::free(str);
+            return s;
+        }
+    }
+    pImpl->mLock.unlock();
+
+    return s.flush();
+}
 
 ostream::Buffer& ostream::getBuffer() noexcept {
     return mImpl->mData;
@@ -43,20 +75,21 @@ ostream::Buffer const& ostream::getBuffer() const noexcept {
     return mImpl->mData;
 }
 
-const char* ostream::getFormat(ostream::type t) const noexcept {
+const char* ostream::getFormat(type t) const noexcept {
     switch (t) {
-        case type::SHORT:       return mImpl->mShowHex ? "0x%hx"  : "%hd";
-        case type::USHORT:      return mImpl->mShowHex ? "0x%hx"  : "%hu";
-        case type::CHAR:        return "%c";
-        case type::UCHAR:       return "%c";
-        case type::INT:         return mImpl->mShowHex ? "0x%x"   : "%d";
-        case type::UINT:        return mImpl->mShowHex ? "0x%x"   : "%u";
-        case type::LONG:        return mImpl->mShowHex ? "0x%lx"  : "%ld";
-        case type::ULONG:       return mImpl->mShowHex ? "0x%lx"  : "%lu";
-        case type::LONG_LONG:   return mImpl->mShowHex ? "0x%llx" : "%lld";
-        case type::ULONG_LONG:  return mImpl->mShowHex ? "0x%llx" : "%llu";
-        case type::DOUBLE:      return "%f";
-        case type::LONG_DOUBLE: return "%Lf";
+        case SHORT:       return mImpl->mShowHex ? "0x%hx"  : "%hd";
+        case USHORT:      return mImpl->mShowHex ? "0x%hx"  : "%hu";
+        case CHAR:        return "%c";
+        case UCHAR:       return "%c";
+        case INT:         return mImpl->mShowHex ? "0x%x"   : "%d";
+        case UINT:        return mImpl->mShowHex ? "0x%x"   : "%u";
+        case LONG:        return mImpl->mShowHex ? "0x%lx"  : "%ld";
+        case ULONG:       return mImpl->mShowHex ? "0x%lx"  : "%lu";
+        case LONG_LONG:   return mImpl->mShowHex ? "0x%llx" : "%lld";
+        case ULONG_LONG:  return mImpl->mShowHex ? "0x%llx" : "%llu";
+        case FLOAT:       return "%.9g";
+        case DOUBLE:      return "%.17g";
+        case LONG_DOUBLE: return "%Lf";
     }
 }
 
@@ -68,12 +101,12 @@ ostream& ostream::print(const char* format, ...) noexcept {
     // figure out how much size to we need
     va_start(args0, format);
     va_copy(args1, args0);
-    ssize_t s = vsnprintf(nullptr, 0, format, args0);
+    ssize_t const s = vsnprintf(nullptr, 0, format, args0);
     va_end(args0);
 
 
     { // scope for the lock
-        std::lock_guard lock(mImpl->mLock);
+        std::lock_guard const lock(mImpl->mLock);
 
         Buffer& buf = getBuffer();
 
@@ -93,66 +126,67 @@ ostream& ostream::print(const char* format, ...) noexcept {
 }
 
 ostream& ostream::operator<<(short value) noexcept {
-    const char* format = getFormat(type::SHORT);
+    const char* format = getFormat(SHORT);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned short value) noexcept {
-    const char* format = getFormat(type::USHORT);
+    const char* format = getFormat(USHORT);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(char value) noexcept {
-    const char* format = getFormat(type::CHAR);
+    const char* format = getFormat(CHAR);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned char value) noexcept {
-    const char* format = getFormat(type::UCHAR);
+    const char* format = getFormat(UCHAR);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(int value) noexcept {
-    const char* format = getFormat(type::INT);
+    const char* format = getFormat(INT);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned int value) noexcept {
-    const char* format = getFormat(type::UINT);
+    const char* format = getFormat(UINT);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(long value) noexcept {
-    const char* format = getFormat(type::LONG);
+    const char* format = getFormat(LONG);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned long value) noexcept {
-    const char* format = getFormat(type::ULONG);
+    const char* format = getFormat(ULONG);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(long long value) noexcept {
-    const char* format = getFormat(type::LONG_LONG);
+    const char* format = getFormat(LONG_LONG);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned long long value) noexcept {
-    const char* format = getFormat(type::ULONG_LONG);
+    const char* format = getFormat(ULONG_LONG);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(float value) noexcept {
-    return operator<<((double)value);
+    const char* format = getFormat(FLOAT);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(double value) noexcept {
-    const char* format = getFormat(type::DOUBLE);
+    const char* format = getFormat(DOUBLE);
     return print(format, value);
 }
 
 ostream& ostream::operator<<(long double value) noexcept {
-    const char* format = getFormat(type::LONG_DOUBLE);
+    const char* format = getFormat(LONG_DOUBLE);
     return print(format, value);
 }
 
@@ -203,23 +237,23 @@ ostream::Buffer::~Buffer() noexcept {
 
 void ostream::Buffer::advance(ssize_t n) noexcept {
     if (n > 0) {
-        size_t written = n < size ? size_t(n) : size;
+        size_t const written = n < sizeRemaining ? size_t(n) : sizeRemaining;
         curr += written;
-        size -= written;
+        sizeRemaining -= written;
     }
 }
 
-void ostream::Buffer::reserve(size_t newSize) noexcept {
-    size_t offset = curr - buffer;
+void ostream::Buffer::reserve(size_t newCapacity) noexcept {
+    size_t const offset = curr - buffer;
     if (buffer == nullptr) {
-        buffer = (char*)malloc(newSize);
+        buffer = (char*)malloc(newCapacity);
     } else {
-        buffer = (char*)realloc(buffer, newSize);
+        buffer = (char*)realloc(buffer, newCapacity);
     }
     assert(buffer);
-    capacity = newSize;
+    capacity = newCapacity;
     curr = buffer + offset;
-    size = capacity - offset;
+    sizeRemaining = capacity - offset;
 }
 
 void ostream::Buffer::reset() noexcept {
@@ -230,17 +264,22 @@ void ostream::Buffer::reset() noexcept {
         capacity = 1024;
     }
     curr = buffer;
-    size = capacity;
+    sizeRemaining = capacity;
+}
+
+size_t ostream::Buffer::length() const noexcept {
+    return curr - buffer;
 }
 
 std::pair<char*, size_t> ostream::Buffer::grow(size_t s) noexcept {
-    if (UTILS_UNLIKELY(size < s)) {
-        size_t used = curr - buffer;
-        size_t newCapacity = std::max(size_t(32), used + (s * 3 + 1) / 2); // 32 bytes minimum
+    if (UTILS_UNLIKELY(sizeRemaining < s)) {
+        size_t const usedSize = curr - buffer;
+        size_t const neededCapacity = usedSize + s;
+        size_t const newCapacity = std::max(size_t(32), (neededCapacity * 3 + 1) / 2); // 32 bytes minimum
         reserve(newCapacity);
-        assert(size >= s);
+        assert(sizeRemaining >= s);
     }
-    return { curr, size };
+    return { curr, sizeRemaining };
 }
 
 } // namespace utils::io

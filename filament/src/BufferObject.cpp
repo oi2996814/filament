@@ -23,12 +23,12 @@
 namespace filament {
 
 void BufferObject::setBuffer(Engine& engine,
-        BufferObject::BufferDescriptor&& buffer, uint32_t byteOffset) {
-    upcast(this)->setBuffer(upcast(engine), std::move(buffer), byteOffset);
+        BufferDescriptor&& buffer, uint32_t const byteOffset) {
+    downcast(this)->setBuffer(downcast(engine), std::move(buffer), byteOffset);
 }
 
 size_t BufferObject::getByteCount() const noexcept {
-    return upcast(this)->getByteCount();
+    return downcast(this)->getByteCount();
 }
 
 } // namespace filament

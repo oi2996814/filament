@@ -36,6 +36,9 @@ using namespace filament::math;
 
 namespace filament {
 
+// TODO: This should be a quality setting on View or LightManager
+static constexpr bool CONFIG_IBL_USE_IRRADIANCE_MAP = false;
+
 // ------------------------------------------------------------------------------------------------
 
 struct IndirectLight::BuilderDetails {
@@ -49,10 +52,10 @@ struct IndirectLight::BuilderDetails {
 using BuilderType = IndirectLight;
 BuilderType::Builder::Builder() noexcept = default;
 BuilderType::Builder::~Builder() noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder&& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder const& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder&& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder const& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder&& rhs) noexcept = default;
 
 IndirectLight::Builder& IndirectLight::Builder::reflections(Texture const* cubemap) noexcept {
     mImpl->mReflectionsMap = cubemap;
@@ -107,7 +110,7 @@ IndirectLight::Builder& IndirectLight::Builder::radiance(uint8_t bands, float3 c
     // this is a way to "document" the actual value of these coefficients and at the same
     // time make sure the expression and values are always in sync.
     struct Debug {
-        static constexpr bool almost(float a, float b) {
+        static constexpr bool almost(float const a, float const b) {
             constexpr float e = 1e-6f;
             return (a > b - e) && (a < b + e);
         }
@@ -135,7 +138,7 @@ IndirectLight::Builder& IndirectLight::Builder::irradiance(Texture const* cubema
     return *this;
 }
 
-IndirectLight::Builder& IndirectLight::Builder::intensity(float envIntensity) noexcept {
+IndirectLight::Builder& IndirectLight::Builder::intensity(float const envIntensity) noexcept {
     mImpl->mIntensity = envIntensity;
     return *this;
 }
@@ -147,33 +150,29 @@ IndirectLight::Builder& IndirectLight::Builder::rotation(mat3f const& rotation) 
 
 IndirectLight* IndirectLight::Builder::build(Engine& engine) {
     if (mImpl->mReflectionsMap) {
-        if (!ASSERT_POSTCONDITION_NON_FATAL(
-                mImpl->mReflectionsMap->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP,
-                "reflection map must a cubemap")) {
-            return nullptr;
-        }
+        FILAMENT_CHECK_PRECONDITION(
+                mImpl->mReflectionsMap->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP)
+                << "reflection map must a cubemap";
 
-        if (IBL_INTEGRATION == IBL_INTEGRATION_IMPORTANCE_SAMPLING) {
+        if constexpr (IBL_INTEGRATION == IBL_INTEGRATION_IMPORTANCE_SAMPLING) {
             mImpl->mReflectionsMap->generateMipmaps(engine);
         }
     }
 
     if (mImpl->mIrradianceMap) {
-        if (!ASSERT_POSTCONDITION_NON_FATAL(
-                mImpl->mIrradianceMap->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP,
-                "irradiance map must a cubemap")) {
-            return nullptr;
-        }
+        FILAMENT_CHECK_PRECONDITION(
+                mImpl->mIrradianceMap->getTarget() == Texture::Sampler::SAMPLER_CUBEMAP)
+                << "irradiance map must a cubemap";
     }
 
-    return upcast(engine).createIndirectLight(*this);
+    return downcast(engine).createIndirectLight(*this);
 }
 
 // ------------------------------------------------------------------------------------------------
 
 FIndirectLight::FIndirectLight(FEngine& engine, const Builder& builder) noexcept {
     if (builder->mReflectionsMap) {
-        mReflectionsTexture = upcast(builder->mReflectionsMap);
+        mReflectionsTexture = downcast(builder->mReflectionsMap);
         mLevelCount = builder->mReflectionsMap->getLevels();
     }
 
@@ -185,30 +184,32 @@ FIndirectLight::FIndirectLight(FEngine& engine, const Builder& builder) noexcept
     mRotation = builder->mRotation;
     mIntensity = builder->mIntensity;
     if (builder->mIrradianceMap) {
-        mIrradianceTexture = upcast(builder->mIrradianceMap);
+        mIrradianceTexture = downcast(builder->mIrradianceMap);
     } else {
         // TODO: if needed, generate the irradiance map, this is an engine config
-        if (FEngine::CONFIG_IBL_USE_IRRADIANCE_MAP) {
+        if (CONFIG_IBL_USE_IRRADIANCE_MAP) {
         }
     }
 }
 
 void FIndirectLight::terminate(FEngine& engine) {
-    if (FEngine::CONFIG_IBL_USE_IRRADIANCE_MAP) {
+    if (CONFIG_IBL_USE_IRRADIANCE_MAP) {
         FEngine::DriverApi& driver = engine.getDriverApi();
         driver.destroyTexture(getIrradianceHwHandle());
     }
 }
 
 backend::Handle<backend::HwTexture> FIndirectLight::getReflectionHwHandle() const noexcept {
-    return mReflectionsTexture ? mReflectionsTexture->getHwHandle() : backend::Handle<backend::HwTexture> {};
+    return mReflectionsTexture ? mReflectionsTexture->getHwHandleForSampling()
+                               : backend::Handle<backend::HwTexture>{};
 }
 
 backend::Handle<backend::HwTexture> FIndirectLight::getIrradianceHwHandle() const noexcept {
-    return mIrradianceTexture ? mIrradianceTexture->getHwHandle() : backend::Handle<backend::HwTexture> {};
+    return mIrradianceTexture ? mIrradianceTexture->getHwHandleForSampling()
+                              : backend::Handle<backend::HwTexture>{};
 }
 
-math::float3 FIndirectLight::getDirectionEstimate(math::float3 const* f) noexcept {
+float3 FIndirectLight::getDirectionEstimate(float3 const* f) noexcept {
     // The linear direction is found as normalize(-sh[3], -sh[1], sh[2]), but the coefficients
     // we store are already pre-normalized, so the negative sign disappears.
     // Note: we normalize the directions only after blending, this matches code used elsewhere --
@@ -220,7 +221,7 @@ math::float3 FIndirectLight::getDirectionEstimate(math::float3 const* f) noexcep
     return -normalize(r * 0.2126f + g * 0.7152f + b * 0.0722f);
 }
 
-math::float4 FIndirectLight::getColorEstimate(math::float3 const* Le, math::float3 direction) noexcept {
+float4 FIndirectLight::getColorEstimate(float3 const* Le, float3 direction) noexcept {
     // See: https://www.gamasutra.com/view/news/129689/Indepth_Extracting_dominant_light_from_Spherical_Harmonics.php
 
     // note Le is our pre-convolved, pre-scaled SH coefficients for the environment
@@ -260,11 +261,11 @@ math::float4 FIndirectLight::getColorEstimate(math::float3 const* Le, math::floa
     return { LdDotLe / intensity, intensity };
 }
 
-math::float3 FIndirectLight::getDirectionEstimate() const noexcept {
+float3 FIndirectLight::getDirectionEstimate() const noexcept {
     return getDirectionEstimate(mIrradianceCoefs.data());
 }
 
-float4 FIndirectLight::getColorEstimate(float3 direction) const noexcept {
+float4 FIndirectLight::getColorEstimate(float3 const direction) const noexcept {
    return getColorEstimate(mIrradianceCoefs.data(), direction);
 }
 

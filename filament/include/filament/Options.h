@@ -19,12 +19,20 @@
 
 #include <filament/Color.h>
 
+#include <math/vec2.h>
+#include <math/vec3.h>
+
+#include <math.h>
+
 #include <stdint.h>
 
 namespace filament {
 
 class Texture;
 
+/**
+ * Generic quality level.
+ */
 enum class QualityLevel : uint8_t {
     LOW,
     MEDIUM,
@@ -69,8 +77,8 @@ enum class BlendMode : uint8_t {
  *
  */
 struct DynamicResolutionOptions {
-    math::float2 minScale = math::float2(0.5f);     //!< minimum scale factors in x and y
-    math::float2 maxScale = math::float2(1.0f);     //!< maximum scale factors in x and y
+    math::float2 minScale = {0.5f, 0.5f};           //!< minimum scale factors in x and y %codegen_java_float%
+    math::float2 maxScale = {1.0f, 1.0f};           //!< maximum scale factors in x and y %codegen_java_float%
     float sharpness = 0.9f;                         //!< sharpness when QualityLevel::MEDIUM or higher is used [0 (disabled), 1 (sharpest)]
     bool enabled = false;                           //!< enable or disable dynamic resolution
     bool homogeneousScaling = false;                //!< set to true to force homogeneous scaling
@@ -78,10 +86,10 @@ struct DynamicResolutionOptions {
     /**
      * Upscaling quality
      * LOW:    bilinear filtered blit. Fastest, poor quality
-     * MEDIUM: AMD FidelityFX FSR1 w/ mobile optimizations
+     * MEDIUM: Qualcomm Snapdragon Game Super Resolution (SGSR) 1.0
      * HIGH:   AMD FidelityFX FSR1 w/ mobile optimizations
      * ULTRA:  AMD FidelityFX FSR1
-     *      FSR1 require a well anti-aliased (MSAA or TAA), noise free scene.
+     *      FSR1 and SGSR require a well anti-aliased (MSAA or TAA), noise free scene. Avoid FXAA and dithering.
      *
      * The default upscaling quality is set to LOW.
      */
@@ -109,8 +117,6 @@ struct DynamicResolutionOptions {
  * blendMode:   Whether the bloom effect is purely additive (false) or mixed with the original
  *              image (true).
  *
- * anamorphism: Bloom's aspect ratio (x/y), for artistic purposes.
- *
  * threshold:   When enabled, a threshold at 1.0 is applied on the source image, this is
  *              useful for artistic reasons and is usually needed when a dirt texture is used.
  *
@@ -125,16 +131,26 @@ struct BloomOptions {
         ADD,           //!< Bloom is modulated by the strength parameter and added to the scene
         INTERPOLATE    //!< Bloom is interpolated with the scene using the strength parameter
     };
-    Texture* dirt = nullptr;                //!< user provided dirt texture
-    float dirtStrength = 0.2f;              //!< strength of the dirt texture
+    Texture* dirt = nullptr;                //!< user provided dirt texture %codegen_skip_json% %codegen_skip_javascript%
+    float dirtStrength = 0.2f;              //!< strength of the dirt texture %codegen_skip_json% %codegen_skip_javascript%
     float strength = 0.10f;                 //!< bloom's strength between 0.0 and 1.0
-    uint32_t resolution = 360;              //!< resolution of vertical axis (2^levels to 2048)
-    float anamorphism = 1.0f;               //!< bloom x/y aspect-ratio (1/32 to 32)
-    uint8_t levels = 6;                     //!< number of blur levels (3 to 11)
+    uint32_t resolution = 384;              //!< resolution of vertical axis (2^levels to 2048)
+    uint8_t levels = 6;                     //!< number of blur levels (1 to 11)
     BlendMode blendMode = BlendMode::ADD;   //!< how the bloom effect is applied
     bool threshold = true;                  //!< whether to threshold the source
     bool enabled = false;                   //!< enable or disable bloom
     float highlight = 1000.0f;              //!< limit highlights to this value before bloom [10, +inf]
+
+    /**
+     * Bloom quality level.
+     * LOW (default): use a more optimized down-sampling filter, however there can be artifacts
+     *      with dynamic resolution, this can be alleviated by using the homogenous mode.
+     * MEDIUM: Good balance between quality and performance.
+     * HIGH: In this mode the bloom resolution is automatically increased to avoid artifacts.
+     *      This mode can be significantly slower on mobile, especially at high resolution.
+     *      This mode greatly improves the anamorphic bloom.
+     */
+    QualityLevel quality = QualityLevel::LOW;
 
     bool lensFlare = false;                 //!< enable screen-space lens flare
     bool starburst = true;                  //!< enable starburst effect on lens flare
@@ -148,19 +164,120 @@ struct BloomOptions {
 };
 
 /**
- * Options to control fog in the scene
+ * Options to control large-scale fog in the scene
  */
 struct FogOptions {
-    float distance = 0.0f;              //!< distance in world units from the camera where the fog starts ( >= 0.0 )
-    float maximumOpacity = 1.0f;        //!< fog's maximum opacity between 0 and 1
-    float height = 0.0f;                //!< fog's floor in world units
-    float heightFalloff = 1.0f;         //!< how fast fog dissipates with altitude
-    LinearColor color{0.5f};            //!< fog's color (linear), see fogColorFromIbl
-    float density = 0.1f;               //!< fog's density at altitude given by 'height'
-    float inScatteringStart = 0.0f;     //!< distance in world units from the camera where in-scattering starts
-    float inScatteringSize = -1.0f;     //!< size of in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100).
-    bool fogColorFromIbl = false;       //!< Fog color will be modulated by the IBL color in the view direction.
-    bool enabled = false;               //!< enable or disable fog
+    /**
+     * Distance in world units [m] from the camera to where the fog starts ( >= 0.0 )
+     */
+    float distance = 0.0f;
+
+    /**
+     * Distance in world units [m] after which the fog calculation is disabled.
+     * This can be used to exclude the skybox, which is desirable if it already contains clouds or
+     * fog. The default value is +infinity which applies the fog to everything.
+     *
+     * Note: The SkyBox is typically at a distance of 1e19 in world space (depending on the near
+     * plane distance and projection used though).
+     */
+    float cutOffDistance = INFINITY;
+
+    /**
+     * fog's maximum opacity between 0 and 1
+     */
+    float maximumOpacity = 1.0f;
+
+    /**
+     * Fog's floor in world units [m]. This sets the "sea level".
+     */
+    float height = 0.0f;
+
+    /**
+     * How fast the fog dissipates with altitude. heightFalloff has a unit of [1/m].
+     * It can be expressed as 1/H, where H is the altitude change in world units [m] that causes a
+     * factor 2.78 (e) change in fog density.
+     *
+     * A falloff of 0 means the fog density is constant everywhere and may result is slightly
+     * faster computations.
+     */
+    float heightFalloff = 1.0f;
+
+    /**
+     *  Fog's color is used for ambient light in-scattering, a good value is
+     *  to use the average of the ambient light, possibly tinted towards blue
+     *  for outdoors environments. Color component's values should be between 0 and 1, values
+     *  above one are allowed but could create a non energy-conservative fog (this is dependant
+     *  on the IBL's intensity as well).
+     *
+     *  We assume that our fog has no absorption and therefore all the light it scatters out
+     *  becomes ambient light in-scattering and has lost all directionality, i.e.: scattering is
+     *  isotropic. This somewhat simulates Rayleigh scattering.
+     *
+     *  This value is used as a tint instead, when fogColorFromIbl is enabled.
+     *
+     *  @see fogColorFromIbl
+     */
+    LinearColor color = { 1.0f, 1.0f, 1.0f };
+
+    /**
+     * Extinction factor in [1/m] at altitude 'height'. The extinction factor controls how much
+     * light is absorbed and out-scattered per unit of distance. Each unit of extinction reduces
+     * the incoming light to 37% of its original value.
+     *
+     * Note: The extinction factor is related to the fog density, it's usually some constant K times
+     * the density at sea level (more specifically at fog height). The constant K depends on
+     * the composition of the fog/atmosphere.
+     *
+     * For historical reason this parameter is called `density`.
+     */
+    float density = 0.1f;
+
+    /**
+     * Distance in world units [m] from the camera where the Sun in-scattering starts.
+     */
+    float inScatteringStart = 0.0f;
+
+    /**
+     * Very inaccurately simulates the Sun's in-scattering. That is, the light from the sun that
+     * is scattered (by the fog) towards the camera.
+     * Size of the Sun in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100).
+     * Smaller values result is a larger scattering size.
+     */
+    float inScatteringSize = -1.0f;
+
+    /**
+     * The fog color will be sampled from the IBL in the view direction and tinted by `color`.
+     * Depending on the scene this can produce very convincing results.
+     *
+     * This simulates a more anisotropic phase-function.
+     *
+     * `fogColorFromIbl` is ignored when skyTexture is specified.
+     *
+     * @see skyColor
+     */
+    bool fogColorFromIbl = false;
+
+    /**
+     * skyTexture must be a mipmapped cubemap. When provided, the fog color will be sampled from
+     * this texture, higher resolution mip levels will be used for objects at the far clip plane,
+     * and lower resolution mip levels for objects closer to the camera. The skyTexture should
+     * typically be heavily blurred; a typical way to produce this texture is to blur the base
+     * level with a strong gaussian filter or even an irradiance filter and then generate mip
+     * levels as usual. How blurred the base level is somewhat of an artistic decision.
+     *
+     * This simulates a more anisotropic phase-function.
+     *
+     * `fogColorFromIbl` is ignored when skyTexture is specified.
+     *
+     * @see Texture
+     * @see fogColorFromIbl
+     */
+    Texture* skyColor = nullptr;    //!< %codegen_skip_json% %codegen_skip_javascript%
+
+    /**
+     * Enable or disable large-scale fog
+     */
+    bool enabled = false;
 };
 
 /**
@@ -174,10 +291,12 @@ struct FogOptions {
  */
 struct DepthOfFieldOptions {
     enum class Filter : uint8_t {
-        NONE = 0,
-        MEDIAN = 2
+        NONE,
+        UNUSED,
+        MEDIAN
     };
     float cocScale = 1.0f;              //!< circle of confusion scale factor (amount of blur)
+    float cocAspectRatio = 1.0f;        //!< width/height aspect ratio of the circle of confusion (simulate anamorphic lenses)
     float maxApertureDiameter = 0.01f;  //!< maximum aperture diameter in meters (zero to disable rotation)
     bool enabled = false;               //!< enable or disable depth of field effect
     Filter filter = Filter::MEDIAN;     //!< filter to use for filling gaps in the kernel
@@ -227,7 +346,7 @@ struct VignetteOptions {
     float midPoint = 0.5f;                      //!< high values restrict the vignette closer to the corners, between 0 and 1
     float roundness = 0.5f;                     //!< controls the shape of the vignette, from a rounded rectangle (0.0), to an oval (0.5), to a circle (1.0)
     float feather = 0.5f;                       //!< softening amount of the vignette effect, between 0 and 1
-    LinearColorA color{0.0f, 0.0f, 0.0f, 1.0f}; //!< color of the vignette effect, alpha is currently ignored
+    LinearColorA color = {0.0f, 0.0f, 0.0f, 1.0f}; //!< color of the vignette effect, alpha is currently ignored
     bool enabled = false;                       //!< enables or disables the vignette effect
 };
 
@@ -271,21 +390,22 @@ struct AmbientOcclusionOptions {
      * Ambient shadows from dominant light
      */
     struct Ssct {
-        float lightConeRad = 1.0f;          //!< full cone angle in radian, between 0 and pi/2
-        float shadowDistance = 0.3f;        //!< how far shadows can be cast
-        float contactDistanceMax = 1.0f;    //!< max distance for contact
-        float intensity = 0.8f;             //!< intensity
-        math::float3 lightDirection{ 0, -1, 0 };    //!< light direction
-        float depthBias = 0.01f;        //!< depth bias in world units (mitigate self shadowing)
-        float depthSlopeBias = 0.01f;   //!< depth slope bias (mitigate self shadowing)
-        uint8_t sampleCount = 4;        //!< tracing sample count, between 1 and 255
-        uint8_t rayCount = 1;           //!< # of rays to trace, between 1 and 255
-        bool enabled = false;           //!< enables or disables SSCT
-    } ssct;
+        float lightConeRad = 1.0f;       //!< full cone angle in radian, between 0 and pi/2
+        float shadowDistance = 0.3f;     //!< how far shadows can be cast
+        float contactDistanceMax = 1.0f; //!< max distance for contact
+        float intensity = 0.8f;          //!< intensity
+        math::float3 lightDirection = { 0, -1, 0 };    //!< light direction
+        float depthBias = 0.01f;         //!< depth bias in world units (mitigate self shadowing)
+        float depthSlopeBias = 0.01f;    //!< depth slope bias (mitigate self shadowing)
+        uint8_t sampleCount = 4;         //!< tracing sample count, between 1 and 255
+        uint8_t rayCount = 1;            //!< # of rays to trace, between 1 and 255
+        bool enabled = false;            //!< enables or disables SSCT
+    };
+    Ssct ssct;                           // %codegen_skip_javascript% %codegen_java_flatten%
 };
 
 /**
- * Options for Temporal Multi-Sample Anti-aliasing (MSAA)
+ * Options for Multi-Sample Anti-aliasing (MSAA)
  * @see setMultiSampleAntiAliasingOptions()
  */
 struct MultiSampleAntiAliasingOptions {
@@ -308,12 +428,53 @@ struct MultiSampleAntiAliasingOptions {
 
 /**
  * Options for Temporal Anti-aliasing (TAA)
+ * Most TAA parameters are extremely costly to change, as they will trigger the TAA post-process
+ * shaders to be recompiled. These options should be changed or set during initialization.
+ * `filterWidth`, `feedback` and `jitterPattern`, however, can be changed at any time.
+ *
+ * `feedback` of 0.1 effectively accumulates a maximum of 19 samples in steady state.
+ * see "A Survey of Temporal Antialiasing Techniques" by Lei Yang and all for more information.
+ *
  * @see setTemporalAntiAliasingOptions()
  */
 struct TemporalAntiAliasingOptions {
-    float filterWidth = 1.0f;   //!< reconstruction filter width typically between 0 (sharper, aliased) and 1 (smoother)
-    float feedback = 0.04f;     //!< history feedback, between 0 (maximum temporal AA) and 1 (no temporal AA).
+    float filterWidth = 1.0f;   //!< reconstruction filter width typically between 1 (sharper) and 2 (smoother)
+    float feedback = 0.12f;     //!< history feedback, between 0 (maximum temporal AA) and 1 (no temporal AA).
+    float lodBias = -1.0f;      //!< texturing lod bias (typically -1 or -2)
+    float sharpness = 0.0f;     //!< post-TAA sharpen, especially useful when upscaling is true.
     bool enabled = false;       //!< enables or disables temporal anti-aliasing
+    bool upscaling = false;     //!< 4x TAA upscaling. Disables Dynamic Resolution. [BETA]
+
+    enum class BoxType : uint8_t {
+        AABB,           //!< use an AABB neighborhood
+        VARIANCE,       //!< use the variance of the neighborhood (not recommended)
+        AABB_VARIANCE   //!< use both AABB and variance
+    };
+
+    enum class BoxClipping : uint8_t {
+        ACCURATE,       //!< Accurate box clipping
+        CLAMP,          //!< clamping
+        NONE            //!< no rejections (use for debugging)
+    };
+
+    enum class JitterPattern : uint8_t {
+        RGSS_X4,             //!  4-samples, rotated grid sampling
+        UNIFORM_HELIX_X4,    //!  4-samples, uniform grid in helix sequence
+        HALTON_23_X8,        //!  8-samples of halton 2,3
+        HALTON_23_X16,       //! 16-samples of halton 2,3
+        HALTON_23_X32        //! 32-samples of halton 2,3
+    };
+
+    bool filterHistory = true;      //!< whether to filter the history buffer
+    bool filterInput = true;        //!< whether to apply the reconstruction filter to the input
+    bool useYCoCg = false;          //!< whether to use the YcoCg color-space for history rejection
+    BoxType boxType = BoxType::AABB;            //!< type of color gamut box
+    BoxClipping boxClipping = BoxClipping::ACCURATE;     //!< clipping algorithm
+    JitterPattern jitterPattern = JitterPattern::HALTON_23_X16; //! Jitter Pattern
+    float varianceGamma = 1.0f; //! High values increases ghosting artefact, lower values increases jittering, range [0.75, 1.25]
+
+    bool preventFlickering = false;     //!< adjust the feedback dynamically to reduce flickering
+    bool historyReprojection = true;    //!< whether to apply history reprojection (debug option)
 };
 
 /**
@@ -329,20 +490,30 @@ struct ScreenSpaceReflectionsOptions {
 };
 
 /**
+ * Options for the  screen-space guard band.
+ * A guard band can be enabled to avoid some artifacts towards the edge of the screen when
+ * using screen-space effects such as SSAO. Enabling the guard band reduces performance slightly.
+ * Currently the guard band can only be enabled or disabled.
+ */
+struct GuardBandOptions {
+    bool enabled = false;
+};
+
+/**
  * List of available post-processing anti-aliasing techniques.
  * @see setAntiAliasing, getAntiAliasing, setSampleCount
  */
 enum class AntiAliasing : uint8_t {
-    NONE = 0,   //!< no anti aliasing performed as part of post-processing
-    FXAA = 1    //!< FXAA is a low-quality but very efficient type of anti-aliasing. (default).
+    NONE,   //!< no anti aliasing performed as part of post-processing
+    FXAA    //!< FXAA is a low-quality but very efficient type of anti-aliasing. (default).
 };
 
 /**
  * List of available post-processing dithering techniques.
  */
 enum class Dithering : uint8_t {
-    NONE = 0,       //!< No dithering
-    TEMPORAL = 1    //!< Temporal dithering (default)
+    NONE,       //!< No dithering
+    TEMPORAL    //!< Temporal dithering (default)
 };
 
 /**
@@ -353,7 +524,8 @@ enum class ShadowType : uint8_t {
     PCF,        //!< percentage-closer filtered shadows (default)
     VSM,        //!< variance shadows
     DPCF,       //!< PCF with contact hardening simulation
-    PCSS        //!< PCF with soft shadows and contact hardening
+    PCSS,       //!< PCF with soft shadows and contact hardening
+    PCFd,       // for debugging only, don't use.
 };
 
 /**
@@ -374,6 +546,22 @@ struct VsmShadowOptions {
      * Whether to generate mipmaps for all VSM shadow maps.
      */
     bool mipmapping = false;
+
+    /**
+     * The number of MSAA samples to use when rendering VSM shadow maps.
+     * Must be a power-of-two and greater than or equal to 1. A value of 1 effectively turns
+     * off MSAA.
+     * Higher values may not be available depending on the underlying hardware.
+     */
+    uint8_t msaaSamples = 1;
+
+    /**
+     * Whether to use a 32-bits or 16-bits texture format for VSM shadow maps. 32-bits
+     * precision is rarely needed, but it does reduces light leaks as well as "fading"
+     * of the shadows in some situations. Setting highPrecision to true for a single
+     * shadow map will double the memory usage of all shadow maps.
+     */
+    bool highPrecision = false;
 
     /**
      * VSM minimum variance scale, must be positive.
@@ -405,6 +593,13 @@ struct SoftShadowOptions {
      * Acceptable values are equal to or greater than 1.
      */
     float penumbraRatioScale = 1.0f;
+};
+
+/**
+ * Options for stereoscopic (multi-eye) rendering.
+ */
+struct StereoscopicOptions {
+    bool enabled = false;
 };
 
 } // namespace filament

@@ -18,110 +18,126 @@
 #define TNT_FILAMENT_BACKEND_OPENGL_OPENGLPROGRAM_H
 
 #include "DriverBase.h"
-#include "OpenGLDriver.h"
 
-#include "private/backend/Driver.h"
-#include "private/backend/Program.h"
+#include "BindingMap.h"
+#include "OpenGLContext.h"
+#include "ShaderCompilerService.h"
 
+#include <private/backend/Driver.h>
+
+#include <backend/DriverEnums.h>
+#include <backend/Program.h>
+
+#include <utils/bitset.h>
 #include <utils/compiler.h>
-#include <utils/Log.h>
+#include <utils/FixedCapacityVector.h>
+#include <utils/Slice.h>
 
-#include <vector>
+#include <limits>
 
 #include <stddef.h>
 #include <stdint.h>
 
-
 namespace filament::backend {
+
+class OpenGLDriver;
+
+struct PushConstantBundle {
+    utils::Slice<std::pair<GLint, ConstantType>> vertexConstants;
+    utils::Slice<std::pair<GLint, ConstantType>> fragmentConstants;
+};
 
 class OpenGLProgram : public HwProgram {
 public:
 
     OpenGLProgram() noexcept;
-    OpenGLProgram(OpenGLDriver& gld, Program&& builder) noexcept;
+    OpenGLProgram(OpenGLDriver& gld, Program&& program) noexcept;
     ~OpenGLProgram() noexcept;
 
-    bool isValid() const noexcept { return mValid; }
+    bool isValid() const noexcept { return mToken || gl.program != 0; }
 
-    void use(OpenGLDriver* const gld, OpenGLContext& context) noexcept {
-        if (UTILS_UNLIKELY(!mInitialized)) {
-            initialize(context);
+    bool use(OpenGLDriver* const gld, OpenGLContext& context) noexcept {
+        // both non-null is impossible by construction
+        assert_invariant(!mToken || !gl.program);
+
+        if (UTILS_UNLIKELY(mToken && !gl.program)) {
+            // first time a program is used
+            initialize(*gld);
+        }
+
+        if (UTILS_UNLIKELY(!gl.program)) {
+            // compilation failed (token should be null)
+            assert_invariant(!mToken);
+            return false;
         }
 
         context.useProgram(gl.program);
-        if (UTILS_UNLIKELY(mUsedBindingsCount)) {
-            // We rely on GL state tracking to avoid unnecessary glBindTexture / glBindSampler
-            // calls.
-
-            // we need to do this if:
-            // - the content of mSamplerBindings has changed
-            // - the content of any bound sampler buffer has changed
-            // ... since last time we used this program
-
-            // turns out the former might be relatively cheap to check, the later requires
-            // a bit less. Compared to what updateSamplers() actually does, which is
-            // pretty little, I'm not sure if we'll get ahead.
-
-            updateSamplers(gld);
-        }
+        return true;
     }
 
-    struct {
-        GLuint shaders[Program::SHADER_TYPE_COUNT] = {};
-        GLuint program = 0;
-    } gl; // 12 bytes
+    GLuint getBufferBinding(descriptor_set_t set, descriptor_binding_t binding) const noexcept {
+        return mBindingMap.get(set, binding);
+    }
+
+    GLuint getTextureUnit(descriptor_set_t set, descriptor_binding_t binding) const noexcept {
+        return mBindingMap.get(set, binding);
+    }
+
+    utils::bitset64 getActiveDescriptors(descriptor_set_t set) const noexcept {
+        return mBindingMap.getActiveDescriptors(set);
+    }
+
+    // For ES2 only
+    void updateUniforms(uint32_t index, GLuint id, void const* buffer, uint16_t age) const noexcept;
+    void setRec709ColorSpace(bool rec709) const noexcept;
+
+    PushConstantBundle getPushConstants() {
+        auto fragBegin = mPushConstants.begin() + mPushConstantFragmentStageOffset;
+        return {
+            .vertexConstants = utils::Slice(mPushConstants.begin(), fragBegin),
+            .fragmentConstants = utils::Slice(fragBegin, mPushConstants.end()),
+        };
+    }
 
 private:
-    static constexpr uint8_t TEXTURE_UNIT_COUNT = OpenGLContext::MAX_TEXTURE_UNIT_COUNT;
-    static constexpr uint8_t VERTEX_SHADER_BIT   = uint8_t(1) << size_t(Program::Shader::VERTEX);
-    static constexpr uint8_t FRAGMENT_SHADER_BIT = uint8_t(1) << size_t(Program::Shader::FRAGMENT);
+    // keep these away from of other class attributes
+    struct LazyInitializationData;
 
-    static void compileShaders(OpenGLContext& context,
-            Program::ShaderSource shadersSource,
-            GLuint shaderIds[Program::SHADER_TYPE_COUNT],
-            std::array<utils::CString, Program::SHADER_TYPE_COUNT>& outShaderSourceCode) noexcept;
-
-    static GLuint linkProgram(const GLuint shaderIds[Program::SHADER_TYPE_COUNT]) noexcept;
-
-    static bool checkProgramStatus(const char* name,
-            GLuint& program, GLuint shaderIds[Program::SHADER_TYPE_COUNT],
-            std::array<utils::CString, 2> const& shaderSourceCode) noexcept;
-
-    void initialize(OpenGLContext& context);
+    void initialize(OpenGLDriver& gld);
 
     void initializeProgramState(OpenGLContext& context, GLuint program,
-            Program::UniformBlockInfo const& uniformBlockInfo,
-            Program::SamplerGroupInfo const& samplerGroupInfo) noexcept;
+            LazyInitializationData& lazyInitializationData) noexcept;
 
-    void updateSamplers(OpenGLDriver* gld) noexcept;
+    BindingMap mBindingMap;     // 8 bytes + out-of-line 256 bytes
 
-    // keep these away from of other class attributes
-    struct LazyInitializationData {
-        Program::UniformBlockInfo uniformBlockInfo;
-        Program::SamplerGroupInfo samplerGroupInfo;
-        std::array<utils::CString, Program::SHADER_TYPE_COUNT> shaderSourceCode;
+    ShaderCompilerService::program_token_t mToken{};    // 16 bytes
+
+    // Note that this can be replaced with a raw pointer and an uint8_t (for size) to reduce the
+    // size of the container to 9 bytes if there is a need in the future.
+    utils::FixedCapacityVector<std::pair<GLint, ConstantType>> mPushConstants;// 16 bytes
+
+    // only needed for ES2
+    using LocationInfo = utils::FixedCapacityVector<GLint>;
+    struct UniformsRecord {
+        Program::UniformInfo uniforms;
+        LocationInfo locations;
+        mutable GLuint id = 0;
+        mutable uint16_t age = std::numeric_limits<uint16_t>::max();
     };
+    UniformsRecord const* mUniformsRecords = nullptr;
+    GLint mRec709Location : 24;     // 4 bytes
 
-    // number of bindings actually used by this program
-    uint8_t mUsedBindingsCount = 0u;
-    // whether lazy initialization has been performed
-    bool mInitialized : 1;
-    // whether lazy initialization was successful
-    bool mValid : 1;
-    UTILS_UNUSED uint8_t padding[2] = {};
+    // Push constant array offset for fragment stage constants.
+    GLint mPushConstantFragmentStageOffset : 8;      // 1 byte
 
-    union {
-        // when mInitialized == true:
-        // information about each USED sampler buffer per binding (no gaps)
-        std::array<uint8_t, Program::BINDING_COUNT> mUsedBindingPoints;   // 12 bytes
-        // when mInitialized == false:
-        // lazy initialization data pointer
-        LazyInitializationData* mLazyInitializationData;
-    };
+public:
+    struct {
+        GLuint program = 0;
+    } gl;                                               // 4 bytes
 };
 
-// if OpenGLProgram is larger tha 64 bytes, it'll fall in a larger Handle bucket.
-static_assert(sizeof(OpenGLProgram) <= 64);
+// if OpenGLProgram is larger than 96 bytes, it'll fall in a larger Handle bucket.
+static_assert(sizeof(OpenGLProgram) <= 96); // currently 96 bytes
 
 } // namespace filament::backend
 

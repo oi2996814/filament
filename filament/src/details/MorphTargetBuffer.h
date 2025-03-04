@@ -17,19 +17,19 @@
 #ifndef TNT_FILAMENT_DETAILS_MORPHTARGETBUFFER_H
 #define TNT_FILAMENT_DETAILS_MORPHTARGETBUFFER_H
 
-#include "upcast.h"
+#include "downcast.h"
 
 #include <filament/MorphTargetBuffer.h>
 
-#include "private/backend/DriverApiForward.h"
-
-#include "private/backend/SamplerGroup.h"
-
+#include <backend/DriverEnums.h>
+#include <backend/DriverApiForward.h>
 #include <backend/Handle.h>
 
-#include <utils/Allocator.h>
+#include <math/vec3.h>
+#include <math/vec4.h>
 
-#include <vector>
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
@@ -37,7 +37,7 @@ class FEngine;
 
 class FMorphTargetBuffer : public MorphTargetBuffer {
 public:
-    class EmptyMorphTargetBuilder : public MorphTargetBuffer::Builder {
+    class EmptyMorphTargetBuilder : public Builder {
     public:
         EmptyMorphTargetBuilder();
     };
@@ -59,24 +59,26 @@ public:
     inline size_t getVertexCount() const noexcept { return mVertexCount; }
     inline size_t getCount() const noexcept { return mCount; }
 
-private:
-    friend class FView;
-    friend class RenderPass;
+    backend::TextureHandle getPositionsHandle() const noexcept {
+        return mPbHandle;
+    }
 
+    backend::TextureHandle getTangentsHandle() const noexcept {
+        return mTbHandle;
+    }
+
+private:
     void updateDataAt(backend::DriverApi& driver, backend::Handle <backend::HwTexture> handle,
             backend::PixelDataFormat format, backend::PixelDataType type, const char* out,
             size_t elementSize, size_t targetIndex, size_t count, size_t offset);
 
-    inline backend::Handle<backend::HwSamplerGroup> getHwHandle() const noexcept { return mSbHandle; }
-
-    backend::Handle<backend::HwSamplerGroup> mSbHandle;
-    backend::Handle<backend::HwTexture> mPbHandle;
-    backend::Handle<backend::HwTexture> mTbHandle;
-    size_t mVertexCount;
-    size_t mCount;
+    backend::TextureHandle mPbHandle;
+    backend::TextureHandle mTbHandle;
+    uint32_t mVertexCount;
+    uint32_t mCount;
 };
 
-FILAMENT_UPCAST(MorphTargetBuffer)
+FILAMENT_DOWNCAST(MorphTargetBuffer)
 
 } // namespace filament
 

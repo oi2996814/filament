@@ -23,9 +23,9 @@
 
 #include <backend/PixelBufferDescriptor.h>
 
+#include <utils/CString.h>
 #include <utils/Panic.h>
 #include <filament/Stream.h>
-
 
 namespace filament {
 
@@ -40,10 +40,10 @@ struct Stream::BuilderDetails {
 using BuilderType = Stream;
 BuilderType::Builder::Builder() noexcept = default;
 BuilderType::Builder::~Builder() noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder::Builder(BuilderType::Builder&& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder const& rhs) noexcept = default;
-BuilderType::Builder& BuilderType::Builder::operator=(BuilderType::Builder&& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder const& rhs) noexcept = default;
+BuilderType::Builder::Builder(Builder&& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder const& rhs) noexcept = default;
+BuilderType::Builder& BuilderType::Builder::operator=(Builder&& rhs) noexcept = default;
 
 
 Stream::Builder& Stream::Builder::stream(void* stream) noexcept {
@@ -51,18 +51,22 @@ Stream::Builder& Stream::Builder::stream(void* stream) noexcept {
     return *this;
 }
 
-Stream::Builder& Stream::Builder::width(uint32_t width) noexcept {
+Stream::Builder& Stream::Builder::width(uint32_t const width) noexcept {
     mImpl->mWidth = width;
     return *this;
 }
 
-Stream::Builder& Stream::Builder::height(uint32_t height) noexcept {
+Stream::Builder& Stream::Builder::height(uint32_t const height) noexcept {
     mImpl->mHeight = height;
     return *this;
 }
 
+Stream::Builder& Stream::Builder::name(const char* name, size_t const len) noexcept {
+    return BuilderNameMixin::name(name, len);
+}
+
 Stream* Stream::Builder::build(Engine& engine) {
-    return upcast(engine).createStream(*this);
+    return downcast(engine).createStream(*this);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -80,28 +84,34 @@ FStream::FStream(FEngine& engine, const Builder& builder) noexcept
     } else {
         mStreamHandle = engine.getDriverApi().createStreamAcquired();
     }
+
+    if (auto name = builder.getName(); !name.empty()) {
+        engine.getDriverApi().setDebugTag(mStreamHandle.getId(), std::move(name));
+    }
 }
 
 void FStream::terminate(FEngine& engine) noexcept {
     engine.getDriverApi().destroyStream(mStreamHandle);
 }
 
-void FStream::setAcquiredImage(void* image, Callback callback, void* userdata) noexcept {
+void FStream::setAcquiredImage(void* image,
+        Callback const callback, void* userdata) noexcept {
     mEngine.getDriverApi().setAcquiredImage(mStreamHandle, image, nullptr, callback, userdata);
 }
 
-void FStream::setAcquiredImage(void* image, CallbackHandler* handler, Callback callback, void* userdata) noexcept {
+void FStream::setAcquiredImage(void* image,
+        CallbackHandler* handler, Callback const callback, void* userdata) noexcept {
     mEngine.getDriverApi().setAcquiredImage(mStreamHandle, image, handler, callback, userdata);
 }
 
-void FStream::setDimensions(uint32_t width, uint32_t height) noexcept {
+void FStream::setDimensions(uint32_t const width, uint32_t const height) noexcept {
     mWidth = width;
     mHeight = height;
 
     // unfortunately, because this call is synchronous, we must make sure the handle has been
     // created first
     if (UTILS_UNLIKELY(!mStreamHandle)) {
-        FFence::waitAndDestroy(mEngine.createFence(FFence::Type::SOFT), Fence::Mode::FLUSH);
+        FFence::waitAndDestroy(mEngine.createFence(), Fence::Mode::FLUSH);
     }
     mEngine.getDriverApi().setStreamDimensions(mStreamHandle, mWidth, mHeight);
 }

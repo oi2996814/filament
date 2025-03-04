@@ -32,6 +32,7 @@
 #include <filament/TextureSampler.h>
 #include <filament/TransformManager.h>
 #include <filament/VertexBuffer.h>
+
 #include <utils/EntityManager.h>
 
 using namespace filament::math;
@@ -45,28 +46,40 @@ namespace filagui {
 
 #include "generated/resources/filagui_resources.h"
 
-ImGuiHelper::ImGuiHelper(Engine* engine, filament::View* view, const Path& fontPath, 
-        ImGuiContext *imGuiContext) 
+ImGuiHelper::ImGuiHelper(Engine* engine, filament::View* view, const Path& fontPath,
+        ImGuiContext *imGuiContext)
         : mEngine(engine), mView(view), mScene(engine->createScene()),
         mImGuiContext(imGuiContext ? imGuiContext : ImGui::CreateContext()) {
     ImGuiIO& io = ImGui::GetIO();
+    mSettingsPath.setPath(
+            Path::getUserSettingsDirectory() +
+            Path(std::string(".") + Path::getCurrentExecutable().getNameWithoutExtension()) +
+            Path("imgui_settings.ini")
+    );
+    mSettingsPath.getParent().mkdirRecursive();
+    io.IniFilename = mSettingsPath.c_str();
 
     // Create a simple alpha-blended 2D blitting material.
-    mMaterial = Material::Builder()
+    mMaterial2d = Material::Builder()
             .package(FILAGUI_RESOURCES_UIBLIT_DATA, FILAGUI_RESOURCES_UIBLIT_SIZE)
             .build(*engine);
+#ifdef __ANDROID__
+    mMaterialExternal = Material::Builder()
+            .package(FILAGUI_RESOURCES_UIBLITEXTERNAL_DATA, FILAGUI_RESOURCES_UIBLITEXTERNAL_SIZE)
+            .build(*engine);
+#endif
 
     // If the given font path is invalid, ImGui will silently fall back to proggy, which is a
     // tiny "pixel art" texture that is compiled into the library.
-    if (!fontPath.isEmpty()) {
+    if (fontPath.isFile()) {
         io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 16.0f);
     }
     createAtlasTexture(engine);
 
     // For proggy, switch to NEAREST for pixel-perfect text.
-    if (fontPath.isEmpty() && !imGuiContext) {
+    if (!fontPath.isFile() && !imGuiContext) {
         mSampler = TextureSampler(MinFilter::NEAREST, MagFilter::NEAREST);
-        mMaterial->setDefaultParameter("albedo", mTexture, mSampler);
+        mMaterial2d->setDefaultParameter("albedo", mTexture, mSampler);
     }
 
     utils::EntityManager& em = utils::EntityManager::get();
@@ -109,7 +122,7 @@ void ImGuiHelper::createAtlasTexture(Engine* engine) {
     mTexture->setImage(*engine, 0, std::move(pb));
 
     mSampler = TextureSampler(MinFilter::LINEAR, MagFilter::LINEAR);
-    mMaterial->setDefaultParameter("albedo", mTexture, mSampler);
+    mMaterial2d->setDefaultParameter("albedo", mTexture, mSampler);
 }
 
 ImGuiHelper::~ImGuiHelper() {
@@ -117,10 +130,16 @@ ImGuiHelper::~ImGuiHelper() {
     mEngine->destroy(mRenderable);
     mEngine->destroyCameraComponent(mCameraEntity);
 
-    for (auto& mi : mMaterialInstances) {
+    for (auto& mi : mMaterial2dInstances) {
         mEngine->destroy(mi);
     }
-    mEngine->destroy(mMaterial);
+    mEngine->destroy(mMaterial2d);
+#ifdef __ANDROID__
+    for (auto& mi : mMaterialExternalInstances) {
+        mEngine->destroy(mi);
+    }
+    mEngine->destroy(mMaterialExternal);
+#endif
     mEngine->destroy(mTexture);
     for (auto& vb : mVertexBuffers) {
         mEngine->destroy(vb);
@@ -137,16 +156,20 @@ ImGuiHelper::~ImGuiHelper() {
     mImGuiContext = nullptr;
 }
 
-void ImGuiHelper::setDisplaySize(int width, int height, float scaleX, float scaleY) {
+void ImGuiHelper::setDisplaySize(int width, int height, float scaleX, float scaleY,
+        bool flipVertical) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(width, height);
     io.DisplayFramebufferScale.x = scaleX;
     io.DisplayFramebufferScale.y = scaleY;
-    mCamera->setProjection(Camera::Projection::ORTHO,
-            0.0, double(width),
-            double(height), 0.0,
-            0.0, 1.0);
-}
+    mFlipVertical = flipVertical;
+    if (flipVertical) {
+        mCamera->setProjection(Camera::Projection::ORTHO, 0.0, double(width),
+                0.0, double(height), 0.0, 1.0);
+    } else {
+        mCamera->setProjection(Camera::Projection::ORTHO, 0.0, double(width),
+                double(height), 0.0, 0.0, 1.0);
+    }}
 
 void ImGuiHelper::render(float timeStepInSeconds, Callback imguiCommands) {
     ImGui::SetCurrentContext(mImGuiContext);
@@ -190,19 +213,12 @@ void ImGuiHelper::processImGuiCommands(ImDrawData* commands, const ImGuiIO& io) 
     auto rbuilder = RenderableManager::Builder(nPrims);
     rbuilder.boundingBox({{ 0, 0, 0 }, { 10000, 10000, 10000 }}).culling(false);
 
-    // Ensure that we have a material instance for each primitive.
-    size_t previousSize = mMaterialInstances.size();
-    if (nPrims > mMaterialInstances.size()) {
-        mMaterialInstances.resize(nPrims);
-        for (size_t i = previousSize; i < mMaterialInstances.size(); i++) {
-            mMaterialInstances[i] = mMaterial->createInstance();
-        }
-    }
-
     // Recreate the Renderable component and point it to the vertex buffers.
     rcm.destroy(mRenderable);
     int bufferIndex = 0;
     int primIndex = 0;
+    int material2dIndex = 0;
+    int materialExternalIndex = 0;
     for (int cmdListIndex = 0; cmdListIndex < commands->CmdListsCount; cmdListIndex++) {
         const ImDrawList* cmds = commands->CmdLists[cmdListIndex];
         populateVertexData(bufferIndex,
@@ -212,13 +228,30 @@ void ImGuiHelper::processImGuiCommands(ImDrawData* commands, const ImGuiIO& io) 
             if (pcmd.UserCallback) {
                 pcmd.UserCallback(cmds, &pcmd);
             } else {
-                MaterialInstance* materialInstance = mMaterialInstances[primIndex];
-                materialInstance->setScissor( pcmd.ClipRect.x, fbheight - pcmd.ClipRect.w,
+                auto texture = (Texture const*)pcmd.TextureId;
+                MaterialInstance* materialInstance;
+#ifdef __ANDROID__
+                if (texture && texture->getTarget() == Texture::Sampler::SAMPLER_EXTERNAL) {
+                    if (materialExternalIndex == mMaterialExternalInstances.size()) {
+                        mMaterialExternalInstances.push_back(mMaterialExternal->createInstance());
+                    }
+                    materialInstance = mMaterialExternalInstances[materialExternalIndex++];
+                } else
+#endif
+                {
+                    if (material2dIndex == mMaterial2dInstances.size()) {
+                        mMaterial2dInstances.push_back(mMaterial2d->createInstance());
+                    }
+                    materialInstance = mMaterial2dInstances[material2dIndex++];
+                }
+                materialInstance->setScissor(
+                        pcmd.ClipRect.x,
+                        mFlipVertical ? pcmd.ClipRect.y :  (fbheight - pcmd.ClipRect.w),
                         (uint16_t) (pcmd.ClipRect.z - pcmd.ClipRect.x),
                         (uint16_t) (pcmd.ClipRect.w - pcmd.ClipRect.y));
-                if (pcmd.TextureId) {
+                if (texture) {
                     TextureSampler sampler(MinFilter::LINEAR, MagFilter::LINEAR);
-                    materialInstance->setParameter("albedo", (Texture const*)pcmd.TextureId, sampler);
+                    materialInstance->setParameter("albedo", texture, sampler);
                 } else {
                     materialInstance->setParameter("albedo", mTexture, mSampler);
                 }

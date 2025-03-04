@@ -53,12 +53,11 @@ test::NativeView getNativeView() {
     nativeView.width = static_cast<size_t>(drawableSize.width);
     nativeView.height = static_cast<size_t>(drawableSize.height);
 
-    test::runTests();
-    // exit(runTests());
+    exit(test::runTests());
 }
 
 - (NSView*)createView {
-    NSRect frame = NSMakeRect(0, 0, 512, 512);
+    NSRect frame = NSMakeRect(0, 0, test::WINDOW_WIDTH, test::WINDOW_HEIGHT);
     NSWindow* window  = [[NSWindow alloc] initWithContentRect:frame
                                                      styleMask:NSWindowStyleMaskBorderless
                                                        backing:NSBackingStoreBuffered

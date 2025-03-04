@@ -69,7 +69,7 @@ TEST_F(BackendTest, MRT) {
 
         // Create a program.
         ShaderGenerator shaderGen(vertex, fragment, sBackend, sIsMobilePlatform);
-        Program p = shaderGen.getProgram();
+        Program p = shaderGen.getProgram(getDriverApi());
         auto program = getDriverApi().createProgram(std::move(p));
 
         TrianglePrimitive triangle(getDriverApi());
@@ -105,7 +105,8 @@ TEST_F(BackendTest, MRT) {
                 512,                                       // width
                 512,                                       // height
                 1,                                         // samples
-                {{textureA },{textureB }}, // color
+                0,                                         // layerCount
+                {{textureA },{textureB }},                 // color
                 {},                                        // depth
                 {});                                       // stencil
 
@@ -126,11 +127,11 @@ TEST_F(BackendTest, MRT) {
         getDriverApi().startCapture(0);
 
         getDriverApi().makeCurrent(swapChain, swapChain);
-        getDriverApi().beginFrame(0, 0);
+        getDriverApi().beginFrame(0, 0, 0);
 
         // Draw a triangle.
         getDriverApi().beginRenderPass(renderTarget, params);
-        getDriverApi().draw(state, triangle.getRenderPrimitive(), 1);
+        getDriverApi().draw(state, triangle.getRenderPrimitive(), 0, 3, 1);
         getDriverApi().endRenderPass();
 
         getDriverApi().flush();

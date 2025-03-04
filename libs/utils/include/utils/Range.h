@@ -17,9 +17,9 @@
 #ifndef TNT_UTILS_RANGE_H
 #define TNT_UTILS_RANGE_H
 
-#include <stddef.h>
-
 #include <iterator>
+
+#include <stddef.h>
 
 namespace utils {
 
@@ -34,7 +34,7 @@ struct Range {
     bool contains(const T& t) const noexcept { return first <= t && t < last; }
 
     bool overlaps(const Range<T>& that) const noexcept {
-        return that.first < this->last && that.last > this->first;
+        return (that.first < this->last) && (that.last > this->first);
     }
 
     class const_iterator {

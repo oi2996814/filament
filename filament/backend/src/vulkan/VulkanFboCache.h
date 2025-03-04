@@ -27,13 +27,6 @@
 
 namespace filament::backend {
 
-// Avoid using VkImageLayout since it requires 4 bytes.
-enum class VulkanDepthLayout : uint8_t {
-    UNDEFINED, // VK_IMAGE_LAYOUT_UNDEFINED
-    GENERAL,   // VK_IMAGE_LAYOUT_GENERAL
-    READ_ONLY, // VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL.
-};
-
 // Simple manager for VkFramebuffer and VkRenderPass objects.
 //
 // Note that a VkFramebuffer is just a binding between a render pass and a set of image views. So,
@@ -42,40 +35,32 @@ enum class VulkanDepthLayout : uint8_t {
 //
 class VulkanFboCache {
 public:
+    constexpr static VulkanLayout FINAL_COLOR_ATTACHMENT_LAYOUT = VulkanLayout::COLOR_ATTACHMENT;
+    constexpr static VulkanLayout FINAL_RESOLVE_ATTACHMENT_LAYOUT = VulkanLayout::COLOR_ATTACHMENT;
+    constexpr static VulkanLayout FINAL_DEPTH_ATTACHMENT_LAYOUT = VulkanLayout::DEPTH_ATTACHMENT;
+
     // RenderPassKey is a small POD representing the immutable state that is used to construct
     // a VkRenderPass. It is hashed and used as a lookup key.
-    // TODO: This struct can be reduced in size by using a subset of formats instead of VkFormat
-    //       and removing the "finalDepthLayout" field.
     struct alignas(8) RenderPassKey {
-        // For each target, we need to know three image layouts: the layout BEFORE the pass, the
-        // layout DURING the pass, and the layout AFTER the pass. Here are the rules:
-        // - For depth, we explicitly specify all three layouts.
-        // - Color targets have their initial image layout specified with a bitmask.
-        // - For each color target, the pre-existing layout is either UNDEFINED (0) or GENERAL (1).
-        // - The render pass and final images layout for color buffers is always GENERAL.
-        uint8_t initialColorLayoutMask;
-        VulkanDepthLayout initialDepthLayout : 2;
-        VulkanDepthLayout renderPassDepthLayout : 2;
-        VulkanDepthLayout finalDepthLayout : 2;      // for now this is always GENERAL
-        uint8_t padding0 : 2;
-        uint8_t padding1[2];
-
         VkFormat colorFormat[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT]; // 32 bytes
         VkFormat depthFormat; // 4 bytes
         TargetBufferFlags clear; // 4 bytes
         TargetBufferFlags discardStart; // 4 bytes
         TargetBufferFlags discardEnd; // 4 bytes
+
+        VulkanLayout initialDepthLayout; // 1 byte
         uint8_t samples; // 1 byte
         uint8_t needsResolveMask; // 1 byte
+        uint8_t usesLazilyAllocatedMemory; // 1 byte
         uint8_t subpassMask; // 1 byte
-        bool padding2; // 1 byte
+        uint8_t viewCount; // 1 byte
+        uint8_t padding[2];
     };
     struct RenderPassVal {
         VkRenderPass handle;
         uint32_t timestamp;
     };
     static_assert(0 == MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT % 8);
-    static_assert(sizeof(RenderPassKey::initialColorLayoutMask) == MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT / 8);
     static_assert(sizeof(TargetBufferFlags) == 4, "TargetBufferFlags has unexpected size.");
     static_assert(sizeof(VkFormat) == 4, "VkFormat has unexpected size.");
     static_assert(sizeof(RenderPassKey) == 56, "RenderPassKey has unexpected size.");
@@ -109,14 +94,14 @@ public:
         bool operator()(const FboKey& k1, const FboKey& k2) const;
     };
 
-    explicit VulkanFboCache(VulkanContext&);
+    explicit VulkanFboCache(VkDevice device);
     ~VulkanFboCache();
 
     // Retrieves or creates a VkFramebuffer handle.
-    VkFramebuffer getFramebuffer(FboKey config) noexcept;
+    VkFramebuffer getFramebuffer(FboKey const& config) noexcept;
 
     // Retrieves or creates a VkRenderPass handle.
-    VkRenderPass getRenderPass(RenderPassKey config) noexcept;
+    VkRenderPass getRenderPass(RenderPassKey const& config) noexcept;
 
     // Evicts old unused Vulkan objects. Call this once per frame.
     void gc() noexcept;
@@ -125,28 +110,14 @@ public:
     void reset() noexcept;
 
 private:
-    VulkanContext& mContext;
-    tsl::robin_map<FboKey, FboVal, FboKeyHashFn, FboKeyEqualFn> mFramebufferCache;
+    VkDevice mDevice;
+    using FboMap = tsl::robin_map<FboKey, FboVal, FboKeyHashFn, FboKeyEqualFn>;
+    FboMap mFramebufferCache;
+
     tsl::robin_map<RenderPassKey, RenderPassVal, RenderPassHash, RenderPassEq> mRenderPassCache;
     tsl::robin_map<VkRenderPass, uint32_t> mRenderPassRefCount;
     uint32_t mCurrentTime = 0;
 };
-
-inline VulkanDepthLayout fromVkImageLayout(VkImageLayout layout) {
-    switch (layout) {
-        case VK_IMAGE_LAYOUT_GENERAL: return VulkanDepthLayout::GENERAL;
-        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL: return VulkanDepthLayout::READ_ONLY;
-        default: return VulkanDepthLayout::UNDEFINED;
-    }
-}
-
-inline VkImageLayout toVkImageLayout(VulkanDepthLayout layout) {
-    switch (layout) {
-        case VulkanDepthLayout::GENERAL: return VK_IMAGE_LAYOUT_GENERAL;
-        case VulkanDepthLayout::READ_ONLY: return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        default: return VK_IMAGE_LAYOUT_UNDEFINED;
-    }
-}
 
 } // namespace filament::backend
 

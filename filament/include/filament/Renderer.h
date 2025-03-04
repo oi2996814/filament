@@ -22,12 +22,11 @@
 #include <filament/FilamentAPI.h>
 
 #include <utils/compiler.h>
-
-#include <backend/PresentCallable.h>
-#include <backend/DriverEnums.h>
+#include <utils/FixedCapacityVector.h>
 
 #include <math/vec4.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace filament {
@@ -80,12 +79,40 @@ public:
         // refresh-rate of the display in Hz. set to 0 for offscreen or turn off frame-pacing.
         float refreshRate = 60.0f;
 
-        // how far in advance a buffer must be queued for presentation at a given time in ns
-        uint64_t presentationDeadlineNanos = 0;
-
-        // offset by which vsyncSteadyClockTimeNano provided in beginFrame() is offset in ns
-        uint64_t vsyncOffsetNanos = 0;
+        UTILS_DEPRECATED uint64_t presentationDeadlineNanos = 0;
+        UTILS_DEPRECATED uint64_t vsyncOffsetNanos = 0;
     };
+
+    /**
+     * Timing information about a frame
+     * @see getFrameInfoHistory()
+     */
+    struct FrameInfo {
+        using time_point_ns = int64_t;
+        using duration_ns = int64_t;
+        uint32_t frameId;                   //!< monotonically increasing frame identifier
+        duration_ns frameTime;              //!< frame duration on the GPU in nanosecond [ns]
+        duration_ns denoisedFrameTime;      //!< denoised frame duration on the GPU in [ns]
+        time_point_ns beginFrame;           //!< Renderer::beginFrame() time since epoch [ns]
+        time_point_ns endFrame;             //!< Renderer::endFrame() time since epoch [ns]
+        time_point_ns backendBeginFrame;    //!< Backend thread time of frame start since epoch [ns]
+        time_point_ns backendEndFrame;      //!< Backend thread time of frame end since epoch [ns]
+    };
+
+    /**
+     * Retrieve an historic of frame timing information. The maximum frame history size is
+     * given by getMaxFrameHistorySize().
+     * @param historySize requested history size. The returned vector could be smaller.
+     * @return A vector of FrameInfo.
+     */
+    utils::FixedCapacityVector<FrameInfo> getFrameInfoHistory(
+            size_t historySize = 1) const noexcept;
+
+    /**
+     * @return the maximum supported frame history size.
+     * @see getFrameInfoHistory()
+     */
+    size_t getMaxFrameHistorySize() const noexcept;
 
     /**
      * Use FrameRateOptions to set the desired frame rate and control how quickly the system
@@ -120,13 +147,37 @@ public:
      * ClearOptions are used at the beginning of a frame to clear or retain the SwapChain content.
      */
     struct ClearOptions {
-        /** Color to use to clear the SwapChain */
+        /**
+         * Color (sRGB linear) to use to clear the RenderTarget (typically the SwapChain).
+         *
+         * The RenderTarget is cleared using this color, which won't be tone-mapped since
+         * tone-mapping is part of View rendering (this is not).
+         *
+         * When a View is rendered, there are 3 scenarios to consider:
+         * - Pixels rendered by the View replace the clear color (or blend with it in
+         *   `BlendMode::TRANSLUCENT` mode).
+         *
+         * - With blending mode set to `BlendMode::TRANSLUCENT`, Pixels untouched by the View
+         *   are considered fulling transparent and let the clear color show through.
+         *
+         * - With blending mode set to `BlendMode::OPAQUE`, Pixels untouched by the View
+         *   are set to the clear color. However, because it is now used in the context of a View,
+         *   it will go through the post-processing stage, which includes tone-mapping.
+         *
+         * For consistency, it is recommended to always use a Skybox to clear an opaque View's
+         * background, or to use black or fully-transparent (i.e. {0,0,0,0}) as the clear color.
+         */
         math::float4 clearColor = {};
+
+        /** Value to clear the stencil buffer */
+        uint8_t clearStencil = 0u;
+
         /**
          * Whether the SwapChain should be cleared using the clearColor. Use this if translucent
          * View will be drawn, for instance.
          */
         bool clear = false;
+
         /**
          * Whether the SwapChain content should be discarded. clear implies discard. Set this
          * to false (along with clear to false as well) if the SwapChain already has content that
@@ -153,18 +204,24 @@ public:
     void setClearOptions(const ClearOptions& options);
 
     /**
+     * Returns the ClearOptions currently set.
+     * @return A reference to a ClearOptions structure.
+     */
+    ClearOptions const& getClearOptions() const noexcept;
+
+    /**
      * Get the Engine that created this Renderer.
      *
      * @return A pointer to the Engine instance this Renderer is associated to.
      */
-    Engine* getEngine() noexcept;
+    Engine* UTILS_NONNULL getEngine() noexcept;
 
     /**
      * Get the Engine that created this Renderer.
      *
      * @return A constant pointer to the Engine instance this Renderer is associated to.
      */
-    inline Engine const* getEngine() const noexcept {
+    inline Engine const* UTILS_NONNULL getEngine() const noexcept {
         return const_cast<Renderer *>(this)->getEngine();
     }
 
@@ -204,6 +261,25 @@ public:
 
 
     /**
+     * The use of this method is optional. It sets the VSYNC time expressed as the duration in
+     * nanosecond since epoch of std::chrono::steady_clock.
+     * If called, passing 0 to vsyncSteadyClockTimeNano in Renderer::BeginFrame will use this
+     * time instead.
+     * @param steadyClockTimeNano duration in nanosecond since epoch of std::chrono::steady_clock
+     * @see Engine::getSteadyClockTimeNano()
+     * @see Renderer::BeginFrame()
+     */
+    void setVsyncTime(uint64_t steadyClockTimeNano) noexcept;
+
+    /**
+     * Call skipFrame when momentarily skipping frames, for instance if the content of the
+     * scene doesn't change.
+     *
+     * @param vsyncSteadyClockTimeNano
+     */
+    void skipFrame(uint64_t vsyncSteadyClockTimeNano = 0u);
+
+    /**
      * Set-up a frame for this Renderer.
      *
      * beginFrame() manages frame pacing, and returns whether or not a frame should be drawn. The
@@ -240,8 +316,22 @@ public:
      * @see
      * endFrame()
      */
-    bool beginFrame(SwapChain* swapChain,
+    bool beginFrame(SwapChain* UTILS_NONNULL swapChain,
             uint64_t vsyncSteadyClockTimeNano = 0u);
+
+    /**
+     * Set the time at which the frame must be presented to the display.
+     *
+     * This must be called between beginFrame() and endFrame().
+     *
+     * @param monotonic_clock_ns  the time in nanoseconds corresponding to the system monotonic up-time clock.
+     *                            the presentation time is typically set in the middle of the period
+     *                            of interest. The presentation time cannot be too far in the
+     *                            future because it is limited by how many buffers are available in
+     *                            the display sub-system. Typically it is set to 1 or 2 vsync periods
+     *                            away.
+     */
+    void setPresentationTime(int64_t monotonic_clock_ns);
 
     /**
      * Render a View into this renderer's window.
@@ -297,7 +387,7 @@ public:
      * beginFrame(), endFrame(), View
      *
      */
-    void render(View const* view);
+    void render(View const* UTILS_NONNULL view);
 
     /**
      * Copy the currently rendered view to the indicated swap chain, using the
@@ -312,7 +402,7 @@ public:
      * copyFrame() should be called after a frame is rendered using render()
      * but before endFrame() is called.
      */
-    void copyFrame(SwapChain* dstSwapChain, Viewport const& dstViewport,
+    void copyFrame(SwapChain* UTILS_NONNULL dstSwapChain, Viewport const& dstViewport,
             Viewport const& srcViewport, uint32_t flags = 0);
 
     /**
@@ -418,7 +508,7 @@ public:
      *
      *  Framebuffer as seen on User buffer (PixelBufferDescriptor&)
      *  screen
-     *  
+     *
      *      +--------------------+
      *      |                    |                .stride         .alignment
      *      |                    |         ----------------------->-->
@@ -448,11 +538,14 @@ public:
      * uploaded to it via setImage, the data returned from readPixels will be y-flipped with respect
      * to the setImage call.
      *
+     * Note: the texture that backs the COLOR attachment for `renderTarget` must have
+     * TextureUsage::BLIT_SRC as part of its usage.
+     *
      * @remark
      * readPixels() is intended for debugging and testing. It will impact performance significantly.
      *
      */
-    void readPixels(RenderTarget* renderTarget,
+    void readPixels(RenderTarget* UTILS_NONNULL renderTarget,
             uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
             backend::PixelBufferDescriptor&& buffer);
 
@@ -479,7 +572,7 @@ public:
      * However, internally, renderStandaloneView() is highly multi-threaded to both improve
      * performance in mitigate the call's latency.
      */
-    void renderStandaloneView(View const* view);
+    void renderStandaloneView(View const* UTILS_NONNULL view);
 
 
     /**
@@ -538,6 +631,10 @@ public:
      * getUserTime()
      */
     void resetUserTime();
+
+protected:
+    // prevent heap allocation
+    ~Renderer() = default;
 };
 
 } // namespace filament

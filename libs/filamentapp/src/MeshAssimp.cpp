@@ -158,22 +158,23 @@ std::string shaderFromConfig(MaterialConfig config) {
 Material* createMaterialFromConfig(Engine& engine, MaterialConfig config ) {
     std::string shader = shaderFromConfig(config);
     MaterialBuilder::init();
-    MaterialBuilder builder = MaterialBuilder()
+    MaterialBuilder builder;
+    builder
             .name("material")
             .material(shader.c_str())
             .doubleSided(config.doubleSided)
             .require(VertexAttribute::UV0)
-            .parameter(MaterialBuilder::SamplerType::SAMPLER_2D, "baseColorMap")
-            .parameter(MaterialBuilder::UniformType::FLOAT4, "baseColorFactor")
-            .parameter(MaterialBuilder::SamplerType::SAMPLER_2D, "metallicRoughnessMap")
-            .parameter(MaterialBuilder::SamplerType::SAMPLER_2D, "aoMap")
-            .parameter(MaterialBuilder::SamplerType::SAMPLER_2D, "emissiveMap")
-            .parameter(MaterialBuilder::SamplerType::SAMPLER_2D, "normalMap")
-            .parameter(MaterialBuilder::UniformType::FLOAT, "metallicFactor")
-            .parameter(MaterialBuilder::UniformType::FLOAT, "roughnessFactor")
-            .parameter(MaterialBuilder::UniformType::FLOAT, "normalScale")
-            .parameter(MaterialBuilder::UniformType::FLOAT, "aoStrength")
-            .parameter(MaterialBuilder::UniformType::FLOAT3, "emissiveFactor");
+            .parameter("baseColorMap", MaterialBuilder::SamplerType::SAMPLER_2D)
+            .parameter("baseColorFactor", MaterialBuilder::UniformType::FLOAT4)
+            .parameter("metallicRoughnessMap", MaterialBuilder::SamplerType::SAMPLER_2D)
+            .parameter("aoMap", MaterialBuilder::SamplerType::SAMPLER_2D)
+            .parameter("emissiveMap", MaterialBuilder::SamplerType::SAMPLER_2D)
+            .parameter("normalMap", MaterialBuilder::SamplerType::SAMPLER_2D)
+            .parameter("metallicFactor", MaterialBuilder::UniformType::FLOAT)
+            .parameter("roughnessFactor", MaterialBuilder::UniformType::FLOAT)
+            .parameter("normalScale", MaterialBuilder::UniformType::FLOAT)
+            .parameter("aoStrength", MaterialBuilder::UniformType::FLOAT)
+            .parameter("emissiveFactor", MaterialBuilder::UniformType::FLOAT3);
 
     if (config.maxUVIndex() > 0) {
         builder.require(VertexAttribute::UV1);
@@ -276,26 +277,25 @@ MeshAssimp::MeshAssimp(Engine& engine) : mEngine(engine) {
 }
 
 MeshAssimp::~MeshAssimp() {
+    for (Entity renderable : mRenderables) {
+        mEngine.destroy(renderable);
+    }
     mEngine.destroy(mVertexBuffer);
     mEngine.destroy(mIndexBuffer);
+    for (auto& item : mMaterialInstances) {
+        mEngine.destroy(item.second);
+    }
     mEngine.destroy(mDefaultColorMaterial);
     mEngine.destroy(mDefaultTransparentColorMaterial);
-    mEngine.destroy(mDefaultNormalMap);
-    mEngine.destroy(mDefaultMap);
-
     for (auto& item : mGltfMaterialCache) {
         auto material = item.second;
         mEngine.destroy(material);
     }
-
-    for (Entity renderable : mRenderables) {
-        mEngine.destroy(renderable);
-    }
-
+    mEngine.destroy(mDefaultNormalMap);
+    mEngine.destroy(mDefaultMap);
     for (Texture* texture : mTextures) {
         mEngine.destroy(texture);
     }
-
     // destroy the Entities itself
     EntityManager::get().destroy(mRenderables.size(), mRenderables.data());
 }
@@ -625,6 +625,10 @@ void MeshAssimp::addFromFile(const Path& path,
                 tcm.getInstance(rootEntity) : tcm.getInstance(mRenderables[pindex]));
         tcm.create(entity, parent, mesh.transform);
     }
+
+    // Takes over the ownership of the material instances so that resources are gracefully
+    // destroyed in a correct order. The caller doesn't need to handle the destruction.
+    mMaterialInstances.swap(materials);
 }
 
 using Assimp::Importer;

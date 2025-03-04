@@ -16,12 +16,20 @@
 
 #include "private/backend/CommandStream.h"
 
+#if DEBUG_COMMAND_STREAM
 #include <utils/CallStack.h>
+#endif
+
+#include <utils/compiler.h>
 #include <utils/Log.h>
+#include <utils/ostream.h>
 #include <utils/Profiler.h>
 #include <utils/Systrace.h>
 
+#include <cstddef>
 #include <functional>
+#include <string>
+#include <utility>
 
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
@@ -34,7 +42,7 @@ namespace filament::backend {
 // ------------------------------------------------------------------------------------------------
 // A few utility functions for debugging...
 
-inline void printParameterPack(io::ostream& out) { }
+inline void printParameterPack(io::ostream&) { }
 
 template<typename LAST>
 static void printParameterPack(io::ostream& out, const LAST& t) { out << t; }
@@ -46,7 +54,7 @@ static void printParameterPack(io::ostream& out, const FIRST& first, const REMAI
 }
 
 static UTILS_NOINLINE UTILS_UNUSED std::string extractMethodName(std::string& command) noexcept {
-    constexpr const char startPattern[] = "::Command<&(filament::backend::Driver::";
+    constexpr const char startPattern[] = "::Command<&filament::backend::Driver::";
     auto pos = command.rfind(startPattern);
     auto end = command.rfind('(');
     pos += sizeof(startPattern) - 1;
@@ -71,7 +79,8 @@ CommandStream::CommandStream(Driver& driver, CircularBuffer& buffer) noexcept
 }
 
 void CommandStream::execute(void* buffer) {
-    SYSTRACE_CALL();
+    // NOTE: we can't use SYSTRACE_CALL() or similar here because, execute() below, also
+    // uses systrace BEGIN/END and the END is not guaranteed to be happening in this scope.
 
     Profiler profiler;
 
@@ -95,7 +104,8 @@ void CommandStream::execute(void* buffer) {
         if (UTILS_UNLIKELY(mUsePerformanceCounter)) {
             // we want to remove all this when tracing is completely disabled
             profiler.stop();
-            UTILS_UNUSED Profiler::Counters counters = profiler.readCounters();
+            UTILS_UNUSED Profiler::Counters const counters = profiler.readCounters();
+            SYSTRACE_CONTEXT();
             SYSTRACE_VALUE32("GLThread (I)", counters.getInstructions());
             SYSTRACE_VALUE32("GLThread (C)", counters.getCpuCycles());
             SYSTRACE_VALUE32("GLThread (CPI x10)", counters.getCPI() * 10);
@@ -145,7 +155,7 @@ void CommandType<void (Driver::*)(ARGS...)>::Command<METHOD>::log() noexcept  {
 
 // ------------------------------------------------------------------------------------------------
 
-void CustomCommand::execute(Driver&, CommandBase* base, intptr_t* next) noexcept {
+void CustomCommand::execute(Driver&, CommandBase* base, intptr_t* next) {
     *next = CustomCommand::align(sizeof(CustomCommand));
     static_cast<CustomCommand*>(base)->mCommand();
     static_cast<CustomCommand*>(base)->~CustomCommand();

@@ -29,19 +29,22 @@ namespace matdbg {
 // in a manner similar to ShaderExtractor.
 class ShaderReplacer {
 public:
-    ShaderReplacer(backend::Backend backend, const void* data, size_t size);
+    ShaderReplacer(backend::Backend backend, backend::ShaderLanguage language,
+            const void* data, size_t size);
     ~ShaderReplacer();
     bool replaceShaderSource(backend::ShaderModel shaderModel, Variant variant,
-            backend::ShaderType stage, const char* sourceString, size_t stringLength);
+            backend::ShaderStage stage, const char* sourceString, size_t stringLength);
     const uint8_t* getEditedPackage() const;
+    filamat::ChunkType getMaterialTag() const noexcept;
     size_t getEditedSize() const;
 private:
     bool replaceSpirv(backend::ShaderModel shaderModel, Variant variant,
-            backend::ShaderType stage, const char* source, size_t sourceLength);
+            backend::ShaderStage stage, const char* source, size_t sourceLength);
     const backend::Backend mBackend;
     filaflat::ChunkContainer mOriginalPackage;
     filaflat::ChunkContainer* mEditedPackage = nullptr;
     filamat::ChunkType mMaterialTag = filamat::ChunkType::Unknown;
+    filamat::ChunkType mDeleteTag = filamat::ChunkType::Unknown;
     filamat::ChunkType mDictionaryTag = filamat::ChunkType::Unknown;
 };
 

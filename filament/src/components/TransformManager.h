@@ -17,7 +17,7 @@
 #ifndef TNT_FILAMENT_COMPONENTS_TRANSFORMMANAGER_H
 #define TNT_FILAMENT_COMPONENTS_TRANSFORMMANAGER_H
 
-#include "upcast.h"
+#include "downcast.h"
 
 #include <filament/TransformManager.h>
 
@@ -32,7 +32,7 @@ namespace filament {
 
 class UTILS_PRIVATE FTransformManager : public TransformManager {
 public:
-    using Instance = TransformManager::Instance;
+    using Instance = Instance;
 
     FTransformManager() noexcept;
     ~FTransformManager() noexcept;
@@ -45,12 +45,28 @@ public:
     * Component Manager APIs
     */
 
-    bool hasComponent(utils::Entity e) const noexcept {
+    bool hasComponent(utils::Entity const e) const noexcept {
         return mManager.hasComponent(e);
     }
 
-    Instance getInstance(utils::Entity e) const noexcept {
-        return Instance(mManager.getInstance(e));
+    Instance getInstance(utils::Entity const e) const noexcept {
+        return { mManager.getInstance(e) };
+    }
+
+    size_t getComponentCount() const noexcept {
+        return mManager.getComponentCount();
+    }
+
+    bool empty() const noexcept {
+        return mManager.empty();
+    }
+
+    utils::Entity getEntity(Instance const i) const noexcept {
+        return mManager.getEntity(i);
+    }
+
+    utils::Entity const* getEntities() const noexcept {
+        return mManager.getEntities();
     }
 
     void setAccurateTranslationsEnabled(bool enable) noexcept;
@@ -93,25 +109,25 @@ public:
 
     void setTransform(Instance ci, const math::mat4& model) noexcept;
 
-    const math::mat4f& getTransform(Instance ci) const noexcept {
+    const math::mat4f& getTransform(Instance const ci) const noexcept {
         return mManager[ci].local;
     }
 
-    const math::mat4f& getWorldTransform(Instance ci) const noexcept {
+    const math::mat4f& getWorldTransform(Instance const ci) const noexcept {
         return mManager[ci].world;
     }
 
-    math::mat4 getTransformAccurate(Instance ci) const noexcept {
+    math::mat4 getTransformAccurate(Instance const ci) const noexcept {
         math::mat4f const& local = mManager[ci].local;
-        math::float3 localTranslationLo = mManager[ci].localTranslationLo;
+        math::float3 const localTranslationLo = mManager[ci].localTranslationLo;
         math::mat4 r(local);
         r[3].xyz += localTranslationLo;
         return r;
     }
 
-    math::mat4 getWorldTransformAccurate(Instance ci) const noexcept {
+    math::mat4 getWorldTransformAccurate(Instance const ci) const noexcept {
         math::mat4f const& world = mManager[ci].world;
-        math::float3 worldTranslationLo = mManager[ci].worldTranslationLo;
+        math::float3 const worldTranslationLo = mManager[ci].worldTranslationLo;
         math::mat4 r(world);
         r[3].xyz += worldTranslationLo;
         return r;
@@ -130,12 +146,12 @@ private:
 
     void computeAllWorldTransforms() noexcept;
 
-    void computeWorldTransform(math::mat4f& outWorld, math::float3& inoutWorldTranslationLo,
+    static void computeWorldTransform(math::mat4f& outWorld, math::float3& inoutWorldTranslationLo,
             math::mat4f const& pt, math::mat4f const& local,
             math::float3 const& ptTranslationLo, math::float3 const& localTranslationLo,
             bool accurate);
 
-    friend class TransformManager::children_iterator;
+    friend class children_iterator;
 
     enum {
         LOCAL,          // local transform (relative to parent), world if no parent
@@ -163,10 +179,10 @@ private:
         using Base::gc;
         using Base::swap;
 
-        typename Base::SoA& getSoA() { return mData; }
+        SoA& getSoA() { return mData; }
 
         struct Proxy {
-            // all of this gets inlined
+            // all of these gets inlined
             UTILS_ALWAYS_INLINE
             Proxy(Base& sim, utils::EntityInstanceBase::Type i) noexcept
                     : local{ sim, i } { }
@@ -197,7 +213,7 @@ private:
     bool mAccurateTranslations = false;
 };
 
-FILAMENT_UPCAST(TransformManager)
+FILAMENT_DOWNCAST(TransformManager)
 
 } // namespace filament
 

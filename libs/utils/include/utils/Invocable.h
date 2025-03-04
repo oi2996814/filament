@@ -17,6 +17,8 @@
 #ifndef TNT_UTILS_INVOKABLE_H
 #define TNT_UTILS_INVOKABLE_H
 
+#include <utils/ostream.h>
+
 #include <type_traits>
 #include <utility>
 
@@ -62,7 +64,7 @@ public:
 
     // Creates an Invocable from the functor passed in.
     template<typename Fn, EnableIfFnMatchesInvocable<Fn, R, Args...> = 0>
-    Invocable(Fn&& fn) noexcept;
+    Invocable(Fn&& fn) noexcept; // NOLINT(google-explicit-constructor)
 
     Invocable(const Invocable&) = delete;
     Invocable(Invocable&& rhs) noexcept;
@@ -81,6 +83,11 @@ public:
     explicit operator bool() const noexcept;
 
 private:
+#if !defined(NDEBUG)
+    friend io::ostream& operator<<(io::ostream& out, const Invocable&) {
+        return out << "Invocable<>"; // TODO: is there a way to do better here?
+    }
+#endif
     void* mInvocable = nullptr;
     void (*mDeleter)(void*) = nullptr;
     R (* mInvoker)(void*, Args...) = nullptr;
@@ -121,12 +128,9 @@ Invocable<R(Args...)>::Invocable(Invocable&& rhs) noexcept
 template<typename R, typename... Args>
 Invocable<R(Args...)>& Invocable<R(Args...)>::operator=(Invocable&& rhs) noexcept {
     if (this != &rhs) {
-        mInvocable = rhs.mInvocable;
-        mDeleter = rhs.mDeleter;
-        mInvoker = rhs.mInvoker;
-        rhs.mInvocable = nullptr;
-        rhs.mDeleter = nullptr;
-        rhs.mInvoker = nullptr;
+        std::swap(mInvocable, rhs.mInvocable);
+        std::swap(mDeleter, rhs.mDeleter);
+        std::swap(mInvoker, rhs.mInvoker);
     }
     return *this;
 }
